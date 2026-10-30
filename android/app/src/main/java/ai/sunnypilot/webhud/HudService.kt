@@ -15,6 +15,7 @@ import android.os.IBinder
  * Keeps the HUD's process alive: the car's CAN reader ([CanBridge]), the link to the comma ([Link]) and
  * the local web server live in it, and Android would otherwise end them with the activity when the HUD
  * leaves the screen. A foreground service with a quiet notification is what Android asks for that.
+ * Full speed in Ready ([PerfBoost]) lives here too, so it ends with Ready even while the HUD is away.
  */
 class HudService : Service() {
 
@@ -39,6 +40,7 @@ class HudService : Service() {
             startForeground(ID, notification)
         }
         CanBridge.start(this)
+        PerfBoost.start(this, Link.get(this).root)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY

@@ -127,7 +127,8 @@ can open CAN sockets here, the same way Pulse's own app does. It forwards a fram
 payload changes and repeats every ID's current frame once a second, so the page can tell a steady value
 (climate, seat heat, a window's position) from a silent bus. Frames to send come to it on stdin, one
 per line, and it answers each on stdout. The page asks for the current state when it loads
-(`window.WebHudApp.canState()`), then gets frames as `webhud:can` events, ~15 Hz batches.
+(`window.WebHudApp.canState()`), then gets frames as `webhud:can` events, ~15 Hz batches (every screen
+frame in Ready, see [Full speed in Ready](#full-speed-in-ready)).
 
 Rebuild the helper (needs only the Go toolchain) with `canbridge/build.sh`. `adb logcat -s WebHud`
 shows `CAN helper: ready` and `CAN frames flowing` when it's up.
@@ -150,8 +151,40 @@ the app.
 
 Pulse drops a large share of received frames (about half on IBUS1, two-thirds on IBUS2): both CAN
 controllers share one SPI bus and every interrupt lands on CPU 0. Status messages repeat, so the
-read-out still settles; it just lags. Reducing the loss (RT priority on the `mcp251x`/SPI IRQ threads,
-or the SoC's own CAN controller) would help this and Pulse's own app.
+read-out still settles; it just lags. In Ready the app moves those interrupts off CPU 0 and raises their
+threads' priority ([Full speed in Ready](#full-speed-in-ready)); the SoC's own CAN controller would help
+more, for Pulse's own app too.
+
+## Full speed in Ready
+
+While the car is in Ready (the READY lamp, `VCU_RdyLamp`, IBUS1 0x234 byte 1 bit 4, read by
+`CanBridge` as the frames come in), `PerfBoost` runs Pulse flat out, and puts everything back when
+Ready ends, when 0x234 stops changing for 3 s (the bus went quiet: the helper only repeats it) or when
+the page's switch goes off (*Display → Debug → Full speed in Ready*, on by default; the app keeps the
+setting, so it applies from the app's start, before the page loads). It lives in `HudService`, so it
+also ends with Ready while the HUD is off screen.
+
+- `CanBridge` hands the page its frames every 16 ms (once a screen frame) instead of every 66 ms.
+  Needs no root.
+- With root (`Link.root`): every CPU cluster's `scaling_min_freq` is raised to its `scaling_max_freq`,
+  and the same for the GPU's devfreq devices (`/sys/class/devfreq/*` named gpu, kgsl, mali...: on
+  Adreno also its bus, gpubw). The governors and the thermal limits are left alone: a thermal cap
+  lowers the maximum and the minimum follows it, so a hot screen still slows itself down.
+- With root: the CAN chips' interrupts (named `mcp251x`, or after their SPI device, `spi1.0`) and
+  their SPI controller's (after its platform device, from `/sys/class/net/can1/device`) move from
+  CPU 0 to the last core of CPU 0's cluster (`smp_affinity_list`), away from every other interrupt
+  and off the big cores the HUD draws on. Their interrupt threads (`irq/<n>-...`) and the controller's
+  message thread (`spi1`) go to `SCHED_FIFO` 80, above the 50 the kernel gives interrupt threads
+  (toybox `chrt`).
+
+`assets/perf/probe.sh` reads all of that, read-only, and `PerfPlan` (unit-tested in `PerfPlanTest`)
+works out what to write, what puts each value back and how much took. The way back is saved
+(`files/perfboost-restore.sh`, a shell script headed by the boot ID) before anything is written, so a
+process that dies boosted puts it back when it starts again; a script from an earlier boot is dropped,
+since a restart resets it all. The switch's status line shows what took, e.g. *CPU clusters at top
+speed 3/3 · GPU 2/2 · CAN interrupts on CPU 3 2/3 · CAN threads at real-time priority 4/4*: an
+interrupt that won't move (some GPIO interrupt controllers can't) or a thread missing from the count
+is the device saying no. `adb logcat -s WebHud` logs each boost and its result.
 
 ## Managing the comma
 

@@ -16,6 +16,27 @@ const OFFLINE_TABS = new Map([
 // the signal browser's buses: the car's own two (what the app reads, CanIds.RX), and the comma's ADAS bus
 const SIG_SOURCES = [['IBUS1', 'IBUS1'], ['IBUS2', 'IBUS2'], ['ADAS', 'ADAS bus (comma)']];
 
+// the line under Full speed in Ready, from the app's PerfBoost.status(): {on, ready, boosted, root (absent until su has
+// answered), cpu, gpu, irqs, threads ([done, of], once a boost has been checked), irqCpu, error}; null outside the app
+function perfText(st, on) {
+  if (!st) return 'Needs the HUD\'s Android app on the car\'s screen.';
+  if (!on) return 'Off.';
+  if (!st.ready) return 'Not in Ready: the screen runs as it normally does.';
+  const parts = ['In Ready: CAN frames every screen frame'];
+  if (st.root === false) parts.push('no root, so the clocks and interrupts stay as they are');
+  else if (st.error) parts.push(st.error);
+  else if (!st.cpu) parts.push(st.root ? 'applying' : 'waiting for root');
+  else {
+    const n = ([done, of]) => `${done}/${of}`;
+    parts.push(`CPU clusters at top speed ${n(st.cpu)}`, st.gpu[1] ? `GPU ${n(st.gpu)}` : 'no GPU clock found');
+    if (!st.irqs[1]) parts.push('no CAN interrupts found');
+    else if (st.irqCpu == null) parts.push('no other core for the CAN interrupts');
+    else parts.push(`CAN interrupts on CPU ${st.irqCpu} ${n(st.irqs)}`);
+    parts.push(st.threads[1] ? `CAN threads at real-time priority ${n(st.threads)}` : 'no CAN interrupt threads found');
+  }
+  return parts.join(' · ') + '.';
+}
+
 export class Settings {
   constructor(app) {
     this.app = app;
@@ -283,7 +304,7 @@ export class Settings {
   // split into sections picked from a bar at the top, so no page is one long list
   renderDisplay() {
     const sec = this.displaySection;
-    this.laneConfNow = this.positionNow = null;   // only the Road section shows them
+    this.laneConfNow = this.positionNow = this.perfNow = null;   // only the Road and Debug sections show them
     this.body.append(el('div.subnav', this.app.segmented([['general', 'General'], ['road', 'Road'], ['objects', 'Objects'], ['debug', 'Debug']], sec,
       v => { this.displaySection = v; this.show('display'); })));
     ({ general: () => this.displayGeneral(), road: () => this.displayRoad(), objects: () => this.displayObjects(), debug: () => this.displayDebug() })[sec]();
@@ -400,6 +421,18 @@ export class Settings {
       : `Fix ${f.acc != null ? `\u00b1${Math.round(f.acc)} m` : ''}, ${age.toFixed(1)} s old` + (f.bearing != null ? `, heading ${Math.round(f.bearing)}\u00b0` : '');
   }
 
+  /** What full speed in Ready is doing (the app's PerfBoost.status), at most once a second unless [now]. */
+  showPerfStatus(now = false) {
+    const out = this.perfNow;
+    if (!out) return;
+    const t = performance.now();
+    if (!now && t - (this.perfShownAt || 0) < 1000) return;
+    this.perfShownAt = t;
+    let st = null;
+    try { st = JSON.parse(window.WebHudApp?.perfStatus?.() || 'null'); } catch { /* not in the app */ }
+    out.textContent = perfText(st, this.app.settings.perfBoost !== false);
+  }
+
   /** What the server has of the map around the car (GET /map/status). */
   showMapStatus() {
     const out = this.mapStatus;
@@ -455,6 +488,17 @@ export class Settings {
         'first drops the blur behind the HUD\'s cards, then steps the resolution down (to 60%), and brings them back once frames keep up. ' +
         'The counter shows the resolution when it\'s below 100%.'),
       this.app.segmented([['auto', 'Auto'], ['1', 'Full'], ['0.75', '75%'], ['0.5', '50%']], s.renderScale, v => set('renderScale', v))));
+    // the app's PerfBoost
+    this.perfNow = el('small.cur', '');
+    body.append(el('div.section', el('h3', 'Performance'),
+      el('div.rows', el('div.row', el('div.lbl', el('b', 'Full speed in Ready'),
+        el('small', 'While the car is in Ready, the app hands the HUD the car\'s CAN frames every screen frame instead of 15 times a second. ' +
+          'With root it also holds the screen\'s processors and graphics at their top speed (they still slow down if they get hot), ' +
+          'moves the CAN chips\' interrupts off the core every other interrupt lands on and raises their priority. ' +
+          'Everything goes back when the car leaves Ready.')),
+        this.app.switch(s.perfBoost !== false, v => set('perfBoost', v)))),
+      this.perfNow));
+    this.showPerfStatus(true);
     body.append(el('div.section', el('h3', 'Geometry calibration'),
       el('p.desc', 'The ADAS lane heading direction is verified on the car; lane curvature and object heading signs aren\'t documented. ' +
         'Flip these if lines bend or cars point the wrong way compared to the openpilot lanes.'),

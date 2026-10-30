@@ -121,6 +121,14 @@ class MainActivity : Activity(), Link.Listener, Infotainment.Listener, CanBridge
             ui.post { setLocationWanted(on) }
         }
 
+        /** The page's *Full speed in Ready* switch, when it starts and when it changes ([PerfBoost]). */
+        @JavascriptInterface
+        fun setPerfBoost(on: Boolean) = PerfBoost.setEnabled(applicationContext, on)
+
+        /** What full speed in Ready is doing, as JSON, for the page's settings. */
+        @JavascriptInterface
+        fun perfStatus(): String = PerfBoost.status()
+
         /** The secret the page sends with its requests to the app's own API (/app/comma, CommaManager; /app/update, AppUpdater). */
         @JavascriptInterface
         fun appToken(): String = link.comma.token
