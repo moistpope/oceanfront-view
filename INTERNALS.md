@@ -207,6 +207,12 @@ drops the blur behind the HUD's cards, then lowers the 3D view's resolution in s
 them back a step at a time once frames have kept up for 8 s (a step that slows things straight down
 again waits a minute). *Full*, *75%* and *50%* fix it, for comparing on the car.
 
+*Full speed in Ready* (*Display → Debug*, on by default) is the Android app's: while the car is in
+Ready it hands the page the car's CAN frames every screen frame instead of at 15 Hz and, with root,
+holds Pulse's CPU and GPU at their top speed and gives the CAN chips' interrupts a core of their own
+and real-time priority, putting it all back when Ready ends (`PerfBoost`, see `android/README.md`).
+The line under the switch shows what took.
+
 Where the work is done: the car's buses are decoded in the page (above), and the comma's process is a
 *bridge*. It reads its buses and openpilot's services and streams them to the page as they are -- the ADASBUS and radar frames the HUD decodes
 (raw, allowlisted by message), and openpilot's services in compact form (`extract.py`) -- in ticks at

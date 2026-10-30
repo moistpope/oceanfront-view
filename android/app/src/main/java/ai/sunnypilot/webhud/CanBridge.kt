@@ -175,10 +175,13 @@ object CanBridge {
             val f = JSONObject().put("bus", bus).put("addr", parts[1].toInt(16)).put("data", parts[2])
             synchronized(latest) { latest[bus + "/" + parts[1]] = f }
             if (!loggedFirst) { loggedFirst = true; Log.i(TAG, "CAN frames flowing (first: ${f.getString("bus")} ${parts[1]})") }
+            if (bus == "IBUS1" && parts[1] == PerfPlan.READY_ADDR) PerfBoost.onReadyFrame(parts[2])
             batch.add(f)
-            // coalesce: flush at ~15 Hz so a burst of changes is one page event
+            // coalesce: flush at ~15 Hz so a burst of changes is one page event; in Ready at full speed
+            // (PerfBoost), once a screen frame
             val now = System.currentTimeMillis()
-            if (now - lastFlush >= 66 || batch.size >= 200) {
+            val since = now - lastFlush
+            if (since >= FLUSH_MS || (since >= FAST_FLUSH_MS && PerfBoost.fast) || batch.size >= 200) {
                 flush(batch)
                 batch.clear()
                 lastFlush = now
@@ -197,4 +200,6 @@ object CanBridge {
 
     private const val TAG = "WebHud"
     private const val TX_PER_SECOND = 60
+    private const val FLUSH_MS = 66L
+    private const val FAST_FLUSH_MS = 16L
 }

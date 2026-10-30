@@ -26,7 +26,7 @@ const DEFAULTS = {
   showTracks: true, showRadar: false, radarAllTracks: false, showLowConf: false, showObjectStats: false, objectMode: 'world',
   laneHeadingSign: 1, laneCurvatureSign: 1, objectHeadingSign: 1, laneConfThreshold: LANE_CONF_THRESHOLD,
   showFps: true, renderScale: 'auto', showMusic: true, showNav: true, demoInfotainment: false, demoCarState: false,
-  calibration: true, mapPrefetchKm: 25, positionSource: 'car', roadcam: 'road',
+  calibration: true, mapPrefetchKm: 25, positionSource: 'car', roadcam: 'road', perfBoost: true,
 };
 
 function loadSettings() {
@@ -109,6 +109,7 @@ class App {
     this.deviceFix = null;         // the last one, or {error}, with rx (Date.now()) for the settings' status
     window.addEventListener('webhud:location', (e) => this.onDeviceLocation(e.detail));
     this.applyPositionSource();
+    this.applyPerfBoost();
     let last = performance.now();
     const loop = (now) => {
       requestAnimationFrame(loop);   // schedule first: one bad frame must not stop the HUD
@@ -153,6 +154,7 @@ class App {
     if (key === 'calibration') this.worker.postMessage({ type: 'calibration', on: value });
     if (key === 'mapPrefetchKm') this.worker.postMessage({ type: 'mapPrefetch', km: Number(value) });
     if (key === 'positionSource') this.applyPositionSource();
+    if (key === 'perfBoost') this.applyPerfBoost();
     if (!this.car.apa) this.scene.update(this.state, this.settings);
     if (this.ui.isOpen && this.ui.tab === 'display') this.ui.show('display', true);
   }
@@ -184,6 +186,13 @@ class App {
     if (d.error || !this.worker) return;
     this.worker.postMessage({ type: 'location', t: Date.now() / 1000,
       fix: { lat: d.lat, lon: d.lon, acc: d.acc ?? null, speed: d.speed ?? null, bearing: d.bearing ?? null, fixT: d.at != null ? d.at / 1000 : null } });
+  }
+
+  // ---- full speed in Ready --------------------------------------------------------------------------
+  // while the car is in Ready the app hands over the CAN frames sooner and, with root, runs the head unit flat out
+  // (PerfBoost); it keeps the switch itself, so it applies from the app's start
+  applyPerfBoost() {
+    try { window.WebHudApp?.setPerfBoost?.(this.settings.perfBoost !== false); } catch { /* not in the app */ }
   }
 
   updateLayout() {
@@ -398,7 +407,7 @@ class App {
     this.lastStateAt = performance.now();
     if (!this.car.apa) this.scene.update(state, this.settings);
     this.updateRadarChip();
-    if (this.ui.isOpen && this.ui.tab === 'display') { this.ui.showLaneConf(); this.ui.showPositionStatus(); }
+    if (this.ui.isOpen && this.ui.tab === 'display') { this.ui.showLaneConf(); this.ui.showPositionStatus(); this.ui.showPerfStatus(); }
     this.autoView(state);
   }
 
