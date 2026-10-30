@@ -133,6 +133,15 @@ per line, and it answers each on stdout. The page asks for the current state whe
 (`window.WebHudApp.canState()`), then gets frames as `webhud:can` events, ~15 Hz batches (every screen
 frame in Ready, see [Full speed in Ready](#full-speed-in-ready)).
 
+Pulse's own app reloads the CAN driver now and then (`rmmod`, `insmod mcp251x.ko`: on its start, for
+one), which deletes `can1` and `can2` and makes new ones. A socket bound to the old interface never
+reads again, so the helper ends when a read fails (the reason goes to the log, `CAN helper: read can1:
+...`), and the app starts a new one on the new interfaces, after a second for a helper that had been
+running a while. An interface that is only down keeps its sockets, so that's waited out (`network is
+down: waiting for it`) while the other bus reads on. Don't take `can1` or `can2` down by hand to test
+this: Pulse's mcp251x driver can't bring a chip back up after `ip link set ... down` ("didn't enter in
+config mode"); only a driver reload does (the Pulse app's *Reload CAN bus*).
+
 Rebuild the helper (needs only the Go toolchain) with `canbridge/build.sh`. `adb logcat -s WebHud`
 shows `CAN helper: ready` and `CAN frames flowing` when it's up.
 
@@ -143,8 +152,9 @@ buffer 1), and a write to `apply_filters` programs them; an ID passes when `(id 
 mask)` for some filter of a buffer. Its defaults pass only parts of the ID range (IBUS1 roughly
 0x200–0x3FF and 0x500–0x7FF, IBUS2 0x200–0x23F, 0x300–0x37F, 0x500–0x53F, 0x580–0x5BF), which loses the
 seat and mirror positions (0x4F3, 0x4F5), the liftgate (0x471), the steering angle and yaw rate (0x1C2,
-0x112), the battery current (0xE9), the charging times (0x630, 0x634) and the odometer (0x641). So at
-start `HwFilters` writes the plan in `CanIds.HW_FILTERS` instead: `gen_ibus.py` searches the tightest
+0x112), the battery current (0xE9), the charging times (0x630, 0x634) and the odometer (0x641). So
+before each helper starts (a driver reload puts the defaults back) `HwFilters` writes the plan in
+`CanIds.HW_FILTERS` instead: `gen_ibus.py` searches the tightest
 masks and filters that let every ID in `CanIds.RX` through (IBUS1 0x200–0x5FF plus four 8-ID windows
 in 0x100–0x1FF, IBUS2 0x000–0x3FF plus 0x500–0x53F, 0x580–0x5BF, 0x600–0x67F). The files belong to
 root, so it goes through the app's root shell (`Link.root`); without root the driver's own values stay

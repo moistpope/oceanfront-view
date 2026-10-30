@@ -11,7 +11,10 @@
 //
 // A line "# ready" is printed once the sockets are bound; "# tx <iface> <id> <ok|error ...>" answers each
 // transmit. Transmitted frames are not looped back into the receive path. Stdin closing (the parent going
-// away) ends it.
+// away) ends it, and so does a socket that can't read (exit code 1, the reason on stderr): an interface
+// that went away -- Pulse's app reloads the CAN driver, which makes new can1/can2 -- leaves a socket that
+// never reads again, so the parent starts a new helper on the new interfaces. An interface that is only
+// down is waited out: its socket reads again once it's up.
 package main
 
 import (
@@ -183,7 +186,16 @@ func main() {
 					if err == syscall.EINTR {
 						continue
 					}
-					return
+					if err == syscall.ENETDOWN {
+						// down, not gone (or bound while down: between Pulse's insmod and its ip link up): the
+						// socket stays bound and reads again once the interface is up, and the other bus reads on
+						fmt.Fprintf(os.Stderr, "read %s: %v: waiting for it\n", iface, err)
+						time.Sleep(100 * time.Millisecond)
+						continue
+					}
+					// the interface is gone (ENODEV: the driver was reloaded): this socket is done, and so is the helper
+					fmt.Fprintf(os.Stderr, "read %s: %v\n", iface, err)
+					os.Exit(1)
 				}
 				if n < 16 {
 					continue

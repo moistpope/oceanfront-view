@@ -68,8 +68,9 @@ class PerfPlanTest {
         assertTrue("echo 0-7 > /proc/irq/301/smp_affinity_list" in restore)
         assertFalse(plan.boost.any { "/proc/irq/302/" in it })
         assertTrue("/system/bin/toybox chrt -f -p 123 80" in boost)
-        assertTrue("/system/bin/toybox chrt -f -p 123 50" in restore)
-        assertTrue("/system/bin/toybox chrt -o -p 130 0" in restore)
+        // put back only while the pid is still that thread (a driver reload ends the interrupt threads)
+        assertTrue("[ \"\$(cat /proc/123/comm 2>/dev/null)\" = 'irq/287-mcp251x' ] && /system/bin/toybox chrt -f -p 123 50" in restore)
+        assertTrue("[ \"\$(cat /proc/130/comm 2>/dev/null)\" = 'spi1' ] && /system/bin/toybox chrt -o -p 130 0" in restore)
         assertFalse(plan.boost.any { " 140 " in it || " 131 " in it })
         // 2 clusters + 2 GPU clocks + 3 interrupts + 4 threads, each with its way back
         assertEquals(11, plan.boost.size)

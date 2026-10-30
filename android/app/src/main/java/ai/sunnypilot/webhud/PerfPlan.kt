@@ -137,14 +137,21 @@ object PerfPlan {
 
     private fun high(t: Task) = (t.policy == SCHED_FIFO || t.policy == SCHED_RR) && t.rtPriority >= RT_PRIORITY
 
-    /** The chrt that puts [t] back as it was, or null for a policy this doesn't know (deadline): then it's left alone. */
-    private fun chrtBack(t: Task): String? = when (t.policy) {
-        SCHED_OTHER -> "$CHRT -o -p ${t.pid} 0"
-        SCHED_FIFO -> "$CHRT -f -p ${t.pid} ${t.rtPriority}"
-        SCHED_RR -> "$CHRT -r -p ${t.pid} ${t.rtPriority}"
-        SCHED_BATCH -> "$CHRT -b -p ${t.pid} 0"
-        SCHED_IDLE -> "$CHRT -i -p ${t.pid} 0"
-        else -> null
+    /**
+     * The chrt that puts [t] back as it was, or null for a policy this doesn't know (deadline): then it's left
+     * alone. Only while its pid is still that thread: Pulse's app reloads the CAN driver, which ends the
+     * interrupt threads, and a later process could have the pid by the time Ready ends.
+     */
+    private fun chrtBack(t: Task): String? {
+        val set = when (t.policy) {
+            SCHED_OTHER -> "-o -p ${t.pid} 0"
+            SCHED_FIFO -> "-f -p ${t.pid} ${t.rtPriority}"
+            SCHED_RR -> "-r -p ${t.pid} ${t.rtPriority}"
+            SCHED_BATCH -> "-b -p ${t.pid} 0"
+            SCHED_IDLE -> "-i -p ${t.pid} 0"
+            else -> return null
+        }
+        return "[ \"\$(cat /proc/${t.pid}/comm 2>/dev/null)\" = '${t.comm}' ] && $CHRT $set"
     }
 
     fun plan(p: Probe): Plan {

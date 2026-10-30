@@ -82,13 +82,7 @@ object CanBridge {
         }
         running = true
         val root = Link.get(context).root
-        thread(name = "webhud-can", isDaemon = true) {
-            // first open the chips' hardware filters so every ID in CanIds.RX can reach the helper
-            val why = HwFilters.apply(root)
-            if (why == null) Log.i(TAG, "CAN hardware filters pass every ID we read")
-            else Log.w(TAG, "CAN hardware filters left as they are ($why): some read-outs stay empty")
-            run(bin)
-        }
+        thread(name = "webhud-can", isDaemon = true) { run(bin, root) }
     }
 
     @Synchronized
@@ -141,9 +135,19 @@ object CanBridge {
         return null
     }
 
-    private fun run(bin: String) {
+    /**
+     * Runs the helper, and a new one whenever it ends. It ends on its own when its interfaces go away: Pulse's
+     * app reloads the CAN driver (rmmod, insmod), which makes new can1/can2 and puts the driver's own hardware
+     * filters back, so they're opened again first, every time.
+     */
+    private fun run(bin: String, root: RootShell) {
         var tries = 0
         while (running) {
+            // the chips' hardware filters, so every ID in CanIds.RX can reach the helper
+            val why = HwFilters.apply(root)
+            if (why == null) Log.i(TAG, "CAN hardware filters pass every ID we read")
+            else Log.w(TAG, "CAN hardware filters left as they are ($why): some read-outs stay empty")
+            val startedAt = System.currentTimeMillis()
             try {
                 Log.i(TAG, "CAN helper starting ($bin)")
                 val args = mutableListOf(bin, "can1=${CanIds.RX["IBUS1"]!!.hex()}", "can2=${CanIds.RX["IBUS2"]!!.hex()}")
@@ -168,7 +172,9 @@ object CanBridge {
             proc?.destroy()   // never two helpers on the bus
             proc = null
             stdin = null
-            if (running) Thread.sleep(minOf(30_000L, 1000L shl minOf(tries++, 5)))   // restart with backoff
+            // restart with backoff, from the start again after a helper that ran fine (the driver reloaded under it)
+            if (System.currentTimeMillis() - startedAt > STEADY_MS) tries = 0
+            if (running) Thread.sleep(minOf(30_000L, 1000L shl minOf(tries++, 5)))
         }
     }
 
@@ -235,4 +241,5 @@ object CanBridge {
     private const val TX_LOG = 40
     private const val FLUSH_MS = 66L
     private const val FAST_FLUSH_MS = 16L
+    private const val STEADY_MS = 30_000L   // a helper that ran this long was working
 }
