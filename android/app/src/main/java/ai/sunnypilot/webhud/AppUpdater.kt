@@ -118,7 +118,7 @@ class AppUpdater(private val context: Context, private val root: RootShell, priv
         connectTimeout = 15_000
         readTimeout = 30_000
         instanceFollowRedirects = true   // the asset redirects to GitHub's object storage, https to https
-        setRequestProperty("User-Agent", "OceanScape/${installed().versionName} (Android)")
+        setRequestProperty("User-Agent", "OceanfrontView/${installed().versionName} (Android)")
     }
 
     private fun get(url: String): String {
@@ -225,10 +225,10 @@ class AppUpdater(private val context: Context, private val root: RootShell, priv
         val log = "/data/local/tmp/oceanfront-update.log"
         val staged = root.run("rm -f $log; cp '${apk.path}' $tmp && chmod 644 $tmp && echo staged", timeoutMs = 30_000) ?: return false
         if (!staged.contains("staged")) throw IOException("couldn't stage the APK for pm: ${staged.trim()}")
-        // the activity by its class name: the package (applicationId) isn't the code's namespace, so ".MainActivity"
-        // would name a class that doesn't exist and nothing would start. setsid takes the shell out of this app's
-        // process group, which Android kills when the install replaces it (plain sh where there's no setsid); the pause
-        // lets the package settle.
+        // the activity by its class name, not ".MainActivity": that only names it while the package (applicationId)
+        // is the code's namespace, and a build under another package would start nothing. setsid takes the shell out
+        // of this app's process group, which Android kills when the install replaces it (plain sh where there's no
+        // setsid); the pause lets the package settle.
         val main = "${context.packageName}/${MainActivity::class.java.name}"
         val script = "pm install -r $tmp > $log 2>&1; echo \"exit:\$?\" >> $log; rm -f $tmp; sleep 2; am start -n $main"
         root.run("S=\$(command -v setsid); \$S sh -c '$script' </dev/null >/dev/null 2>&1 &", timeoutMs = 5000)
@@ -285,7 +285,7 @@ class AppUpdater(private val context: Context, private val root: RootShell, priv
 
     companion object {
         private const val TAG = "WebHud"
-        const val REPO = "benkayuk/oceanscape"   // OceanScape's own releases (signed with Ben's key)
+        const val REPO = "moistpope/oceanfront-view"
         private const val LATEST_URL = "https://api.github.com/repos/$REPO/releases/latest"
         private const val MOVING_MS = 1.0
         private const val ROOT_INSTALL_MS = 120_000L

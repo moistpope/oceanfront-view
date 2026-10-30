@@ -91,7 +91,7 @@ export class CommaPanel {
     this.active = true;
     this.body = body;
     if (!this.inApp) {
-      body.append(el('div.banner', 'Managing the comma needs the OceanScape app on the car\'s screen: it holds the SSH key and talks to the comma.'));
+      body.append(el('div.banner', 'Managing the comma needs the Oceanfront View app on the car\'s screen: it holds the SSH key and talks to the comma.'));
       return;
     }
     body.append(el('div.subnav', this.app.segmented(SECTIONS, this.section, v => { this.section = v; this.app.ui.show('comma'); })));

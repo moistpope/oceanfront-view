@@ -438,9 +438,8 @@ class LocalServer(
 
     companion object {
         private const val TAG = "WebHud"
-        /** Fixed, so the page's origin and its saved settings stay the same from launch to launch; not Oceanfront View's
-         *  18088, so the two apps never take each other's port. */
-        const val PREFERRED_PORT = 18089
+        /** Fixed, so the page's origin and its saved settings stay the same from launch to launch. */
+        const val PREFERRED_PORT = 18088
         const val WWW = "www"
         private const val CONNECT_TIMEOUT_MS = 2000
         private const val HEAD_TIMEOUT_MS = 5000

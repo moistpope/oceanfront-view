@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">OceanScape</string>
+    <string name="app_name">Oceanfront View</string>
     <string name="starting">Starting the HUD</string>
     <string name="service_channel">Keeps the HUD running on the car\'s screen</string>
     <string name="service_text">Running</string>

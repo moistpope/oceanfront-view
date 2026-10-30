@@ -1,4 +1,4 @@
-// OceanScape's own version and its updates, for the Software sheet. The Android app (AppUpdater, at
+// Oceanfront View's own version and its updates, for the Software sheet. The Android app (AppUpdater, at
 // /app/update on its own server) asks the repository's GitHub releases for a newer APK, downloads it, checks it
 // (the release's SHA-256, this app, the same signing key) and installs it: silently through root, which starts the
 // app again, else Android's own installer asks on screen. The HUD restarts either way, so not while the car moves.
@@ -78,7 +78,7 @@ export class AppUpdate {
 
   async install() {
     const l = this.st.latest;
-    if (!confirm(`Install OceanScape ${l.version}? It downloads ${fmtBytes(l.size)}, then the HUD restarts with the new version.`)) return;
+    if (!confirm(`Install Oceanfront View ${l.version}? It downloads ${fmtBytes(l.size)}, then the HUD restarts with the new version.`)) return;
     try {
       this.st = await this.call('POST', '/install', { speed: this.app.ui.comma.speed() });
       this.error = null;

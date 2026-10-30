@@ -33,7 +33,7 @@ a new hotspot subnet each time the hotspot starts).
 
 ## Staying connected
 
-The page is served by the app at `http://127.0.0.1:18089` (`LocalServer`): its files from the APK's
+The page is served by the app at `http://127.0.0.1:18088` (`LocalServer`): its files from the APK's
 assets (`assets/www/`, copied in from the repo at build time), and `/api/...`, the `/ws` stream and the camera view's `/video`
 relayed to the comma byte for byte (HTTP and the WebSocket alike). So:
 

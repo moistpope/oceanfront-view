@@ -648,7 +648,7 @@ export class Settings {
   async renderAbout() {
     const body = this.body;
     // the app's version and its updates, as on the car controls' Software sheet (appupdate.js)
-    body.append(el('div.section', el('h3', 'OceanScape'), this.app.car.appUpdate.render(true)));
+    body.append(el('div.section', el('h3', 'Oceanfront View'), this.app.car.appUpdate.render(true)));
     const src = { car: this.app.state && this.app.state.comma ? "The car's IBUS1/IBUS2, with the comma's ADAS bus, radar and openpilot" : "The car's IBUS1/IBUS2",
       comma: 'The comma alone (no car buses here)', replay: 'A drive the comma is replaying', none: 'Nothing yet: the car is asleep, or this isn\'t the car\'s screen' }[this.app.source];
     body.append(el('div.section', el('h3', 'Driving data'), el('div.kv', el('span', 'Source'), el('span', src))));

@@ -34,7 +34,6 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.window.OnBackInvokedDispatcher
 import org.json.JSONObject
-import kotlin.concurrent.thread
 
 /**
  * The HUD, full screen. The page comes from the app's own [LocalServer] (its files are in the APK) and
@@ -173,7 +172,6 @@ class MainActivity : Activity(), Link.Listener, Infotainment.Listener, CanBridge
         link = Link.get(this)
         location = DeviceLocation(this) { json -> sendLocation(json) }
         HudListener.grantInBackground(this, link.root)
-        stopOtherApp()
         HudService.start(this)   // also starts the CAN reader
         createWebView()
         hideSystemBars()
@@ -238,14 +236,6 @@ class MainActivity : Activity(), Link.Listener, Infotainment.Listener, CanBridge
     override fun onInfotainment(kind: String, json: String) {
         if (page != Page.LOADED) return   // the page asks for it all when it starts
         web?.evaluateJavascript("window.dispatchEvent(new CustomEvent('webhud:$kind',{detail:$json}))", null)
-    }
-
-    /** One HUD at a time: moistpope's Oceanfront View (its own package) is stopped when this one opens, so its
-     *  background service lets go of the CAN bridge and the comma. Needs root; without it, nothing happens. */
-    private fun stopOtherApp() {
-        val other = "ai.sunnypilot.webhud"
-        if (other == packageName) return
-        thread(name = "webhud-stop-other", isDaemon = true) { link.root.run("am force-stop $other") }
     }
 
     private fun reloadInfotainment() {
