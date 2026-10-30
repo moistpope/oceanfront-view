@@ -111,14 +111,17 @@ mirror, so the HUD runs from the car alone when the comma is away (see the [main
 
 **Sending.** The page can send the head unit's own control messages (windows, lock, liftgate, sunroof,
 mirrors, lamps, climate, seat heat and moves, the locking settings) through `window.WebHudApp.canSend`.
-Only the IDs in `CanIds.TX` go out, and that allowlist is enforced twice: in `CanBridge.send` and in
-the helper, which only opens a transmit socket for the IDs it was given on its command line. A frame is
-refused when the bus is silent (the car asleep, or the link down) or past 60 frames a second, and every
-frame sent is logged (`adb logcat -s WebHud`, `CAN send`, and the helper's `tx ... ok`). The head unit's
-cyclic state messages (drive mode and charging, units and brightness, ambient light and California
-Mode) are never sent: the head unit would send its own values right back, and some carry an E2E
-counter. Nor are the audio messages, whose one frame carries every volume and the mute. What the app
-sends never loops back into what it reads.
+Only the IDs in `CanIds.TX` go out, and that allowlist is enforced twice: in `CanBridge.send` and in the
+helper, which only opens a transmit socket for the IDs it was given on its command line. A frame is
+refused when the bus is silent (the car asleep, or the link down) or past 60 frames a second. Silent
+means no frame on that bus has changed for 3 s: the helper's once-a-second repeats of an unchanged frame
+(below) go on after the bus falls quiet, so they don't count, while an awake bus always has something
+changing, since most messages carry an alive counter or a checksum. Every frame sent is logged (`adb
+logcat -s WebHud`, `CAN send`, and the helper's `tx ... ok`). The head unit's cyclic state messages
+(drive mode and charging, units and brightness, ambient light and California Mode) are never sent: the
+head unit would send its own values right back, and some carry an E2E counter. Nor are the audio
+messages, whose one frame carries every volume and the mute. What the app sends never loops back into
+what it reads.
 
 The reading and sending are done by a bundled helper, `libcanbridge.so` (`canbridge/main.go`): a plain
 executable shipped as a `.so` so Android installs it into the app's `nativeLibraryDir`, the one directory

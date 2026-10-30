@@ -19,8 +19,8 @@ import kotlin.concurrent.thread
  *
  * It can also send: the head unit's own control messages (windows, locks, climate, seats...), and only
  * those. The allowlist is enforced twice, here and in the helper that holds the sockets. Every frame
- * sent is logged. Nothing is sent while a bus is asleep (nothing received on it lately) or faster than
- * [TX_PER_SECOND] frames a second.
+ * sent is logged. Nothing is sent while a bus is asleep (nothing changing on it lately, see [awake]) or
+ * faster than [TX_PER_SECOND] frames a second.
  *
  * The reading and sending are done by the bundled `libcanbridge.so` helper (canbridge/main.go): a
  * plain executable shipped as a .so so it lands in the app's nativeLibraryDir, the one place an app may
@@ -38,7 +38,7 @@ object CanBridge {
 
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val latest = LinkedHashMap<String, JSONObject>()   // "bus/addr" -> last frame, for a new page
-    private val busSeen = HashMap<String, Long>()               // iface -> when a frame last came in
+    private val busSeen = HashMap<String, Long>()               // iface -> when a frame last changed on it
     private var proc: Process? = null
     private var stdin: BufferedWriter? = null
     @Volatile private var running = false
@@ -86,7 +86,10 @@ object CanBridge {
         stdin = null
     }
 
-    /** Whether frames are arriving on [bus] ("IBUS1" / "IBUS2"): the car is awake and the link works. */
+    /**
+     * Whether [bus] ("IBUS1" / "IBUS2") is live: some frame on it changed in the last [maxAgeMs], so the car
+     * is awake and the link works. The helper's repeats of an unchanged frame don't count ([isSignOfLife]).
+     */
     fun awake(bus: String, maxAgeMs: Long = 3000): Boolean {
         val iface = IFACE[bus] ?: return false
         val t = synchronized(busSeen) { busSeen[iface] } ?: return false
@@ -171,9 +174,11 @@ object CanBridge {
             val parts = line.split(' ')
             if (parts.size != 3) continue
             val bus = BUS[parts[0]] ?: continue
-            synchronized(busSeen) { busSeen[parts[0]] = System.currentTimeMillis() }
             val f = JSONObject().put("bus", bus).put("addr", parts[1].toInt(16)).put("data", parts[2])
-            synchronized(latest) { latest[bus + "/" + parts[1]] = f }
+            val held = synchronized(latest) { latest.put(bus + "/" + parts[1], f) }
+            if (isSignOfLife(held?.optString("data"), parts[2])) {
+                synchronized(busSeen) { busSeen[parts[0]] = System.currentTimeMillis() }
+            }
             if (!loggedFirst) { loggedFirst = true; Log.i(TAG, "CAN frames flowing (first: ${f.getString("bus")} ${parts[1]})") }
             batch.add(f)
             // coalesce: flush at ~15 Hz so a burst of changes is one page event
@@ -186,6 +191,14 @@ object CanBridge {
         }
         if (batch.isNotEmpty()) flush(batch)
     }
+
+    /**
+     * Whether a frame shows its bus is awake: its payload [data] differs from [held], the last one held for
+     * that ID (null for none yet). The helper reprints every ID's last frame once a second, forever, even
+     * after the bus has gone quiet, so an identical repeat proves nothing. An awake bus always has frames
+     * changing: most of what we read carries an alive counter or a checksum that moves every cycle.
+     */
+    internal fun isSignOfLife(held: String?, data: String) = held != data
 
     private fun flush(batch: List<JSONObject>) {
         if (batch.isEmpty() || listeners.isEmpty()) return
