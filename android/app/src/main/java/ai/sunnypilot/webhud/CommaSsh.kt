@@ -74,8 +74,10 @@ class CommaSsh(context: Context, private val key: SshKey) {
         }
     }
 
-    /** Result of a command: its exit code (-1: none, it was cut off) and output (stdout and stderr together). */
-    data class Result(val code: Int, val output: String)
+    /** Result of a command: its exit code and output (stdout and stderr together). -1: no exit code, either because
+     *  the command ran past its time ([timedOut]) or because the connection closed before the comma sent one (it
+     *  rebooted, its network dropped, or the session was closed under it). */
+    data class Result(val code: Int, val output: String, val timedOut: Boolean = false)
 
     /**
      * Runs [script] with bash on the comma, and returns once it ends or [timeoutMs]
@@ -115,7 +117,7 @@ class CommaSsh(context: Context, private val key: SshKey) {
                     }
                 }
                 if (ch.isClosed && input.available() == 0) break
-                if (System.currentTimeMillis() > deadline) return Result(-1, out.toString(Charsets.UTF_8.name()) + "\n[timed out]")
+                if (System.currentTimeMillis() > deadline) return Result(-1, out.toString(Charsets.UTF_8.name()) + "\n[timed out]", timedOut = true)
                 if (!got) Thread.sleep(25)
             }
             val bytes = out.toByteArray()

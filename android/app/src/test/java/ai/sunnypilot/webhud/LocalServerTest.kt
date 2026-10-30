@@ -56,10 +56,10 @@ class LocalServerTest {
 
     private fun Socket.reader() = getInputStream().bufferedReader()
 
-    /** Reads the echoed request head (three lines), then asks. */
+    /** Reads the echoed request head (up to its blank line, echoed as "<name>:"; the server adds a line), then asks. */
     private fun Socket.ask(line: String, first: Boolean = false): String? {
         val r = reader()
-        if (first) repeat(3) { r.readLine() }
+        if (first) while (r.readLine()?.endsWith(":") == false) { /* a head line */ }
         getOutputStream().write("$line\n".toByteArray())
         return r.readLine()
     }
@@ -79,6 +79,19 @@ class LocalServerTest {
         open().use { s ->
             assertEquals("a:hello", s.ask("hello", first = true))
             assertTrue(nowMs() - server.lastDeviceData < 1000)
+        }
+    }
+
+    @Test
+    fun anApiCallAsksTheDeviceToCloseAfterIt() {
+        // kept alive, the page's next request on the connection (an /app/ or /map/ one) would reach the device
+        server.setDevice(echo("a"))
+        Socket("127.0.0.1", server.port).use { s ->
+            s.soTimeout = 2000
+            s.getOutputStream().write("GET /api/x HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\n\r\n".toByteArray())
+            val r = s.reader()
+            val head = generateSequence { r.readLine() }.takeWhile { it != "a:" }.toList()
+            assertEquals(listOf("a:GET /api/x HTTP/1.1", "a:Host: 127.0.0.1", "a:Connection: close"), head)
         }
     }
 
@@ -137,6 +150,7 @@ class LocalServerTest {
         assertEquals("text/javascript; charset=utf-8", LocalServer.contentType("js/world/worker.js"))
         assertEquals("model/gltf-binary", LocalServer.contentType("models/pulse_ocean_v0.10_parts.glb"))
         assertEquals("text/plain; charset=utf-8", LocalServer.contentType("dbc/fisker_ocean_mrr.dbc"))
+        assertEquals("font/ttf", LocalServer.contentType("comma/Inter-Bold.ttf"))
         assertEquals("application/octet-stream", LocalServer.contentType("noext"))
     }
 }

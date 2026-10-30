@@ -60,16 +60,27 @@ html.lowfx .card, html.lowfx .viewdock > button.icon, html.lowfx .viewmenu { bac
 
 #scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 /* object stats (labels.js): debug tags over the 3D objects, never in the way of touches */
-/* the comma's camera (roadcam.js): over the 3D view and under the cards, chips and dock */
-.roadcam { position: absolute; inset: 0; z-index: 2; background: #000; touch-action: none; }
+/* the comma's camera (roadcam.js): a window over the 3D view, under the cards, chips and dock, 16:9 for road and wide
+   and the comma 4 screen's shape (536 x 240) for the mirror; roadcam.js sets its shape, place and width (dragged, and
+   resized from the corner handle). Its controls
+   show for a few seconds after a tap (.controls), out of the way of the mirrored screen otherwise */
+.roadcam { position: absolute; z-index: 3; top: 16px; left: 16px; aspect-ratio: 536 / 240; width: min(calc(100vw - 32px), 1600px); background: #000; border-radius: 16px; overflow: hidden;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .45); touch-action: none; cursor: grab; }
 .roadcam canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.roadcam-status { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: min(480px, 80vw); padding: 12px 18px;
-  border-radius: 14px; background: rgba(20, 22, 26, .78); color: #f1f3f6; font-size: 15px; text-align: center; }
-.roadcam-cams { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 2px; padding: 4px; border-radius: 14px;
-  background: rgba(20, 22, 26, .6); }
-.roadcam-cams button { height: 40px; min-width: 76px; border: 0; border-radius: 10px; background: transparent; color: rgba(241, 243, 246, .75); font-weight: 600; font-size: 14px; }
+.roadcam-status { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80%; padding: 10px 16px;
+  border-radius: 12px; background: rgba(20, 22, 26, .78); color: #f1f3f6; font-size: 14px; text-align: center; }
+.roadcam-cams { position: absolute; left: 10px; bottom: 10px; display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: rgba(20, 22, 26, .6); }
+.roadcam-cams button { height: 34px; min-width: 64px; border: 0; border-radius: 9px; background: transparent; color: rgba(241, 243, 246, .75); font-weight: 600; font-size: 13px; }
 .roadcam-cams button.on { background: rgba(255, 255, 255, .16); color: #fff; }
-body.roadcam-on #olabels, body.roadcam-on .caranchors, body.roadcam-on #roadname { display: none; }
+.roadcam-close { position: absolute; top: 8px; right: 8px; width: 36px; height: 36px; border: 0; border-radius: 50%; background: rgba(20, 22, 26, .6); color: #fff; padding: 9px; }
+.roadcam-resize { position: absolute; right: 0; bottom: 0; width: 44px; height: 44px; cursor: nwse-resize; }
+.roadcam-resize::after { content: ''; position: absolute; right: 8px; bottom: 8px; width: 16px; height: 16px; border-right: 3px solid rgba(255, 255, 255, .85);
+  border-bottom: 3px solid rgba(255, 255, 255, .85); border-bottom-right-radius: 6px; filter: drop-shadow(0 0 2px rgba(0, 0, 0, .6)); }
+.roadcam-close svg { width: 18px; height: 18px; display: block; }
+.roadcam-cams, .roadcam-close { opacity: 0; pointer-events: none; transition: opacity .2s; }
+.roadcam.controls .roadcam-cams, .roadcam.controls .roadcam-close { opacity: 1; pointer-events: auto; }
+.roadcam-resize { opacity: .4; transition: opacity .2s; }
+.roadcam.controls .roadcam-resize { opacity: 1; }
 #olabels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
 .olabel { position: absolute; left: 0; top: 0; padding: 3px 7px 3px 6px; border-radius: 7px; border-left: 3px solid var(--muted);
   background: var(--panel); box-shadow: var(--shadow); color: var(--text); font: 500 10.5px/1.3 var(--font); font-variant-numeric: tabular-nums;
@@ -220,7 +231,7 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bord
 .sheet header { display: flex; align-items: center; gap: 8px; padding: 10px 10px 0 14px; border-bottom: 1px solid var(--line); }
 .sheet nav { display: flex; gap: 2px; overflow-x: auto; flex: 1; scrollbar-width: none; }
 .sheet nav::-webkit-scrollbar { display: none; }
-.sheet nav button { border: 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; padding: 12px 12px 13px; border-bottom: 3px solid transparent; white-space: nowrap; }
+.sheet nav button { border: 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; padding: 12px 10px 13px; flex-shrink: 0; border-bottom: 3px solid transparent; white-space: nowrap; }
 .sheet nav button.on { color: var(--text); border-bottom-color: var(--accent); }
 .sheet .close { height: 44px; border: 0; background: transparent; border-radius: 10px; }
 .tab-body { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 16px 18px 40px; -webkit-overflow-scrolling: touch; user-select: text; -webkit-user-select: text; }
@@ -542,3 +553,8 @@ aside.carpanel.hvac .fo-sheet__body > * + * { margin-top: 0; }
 .procs td.st { white-space: nowrap; }
 .procs .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 .procs .dot.run { background: var(--green); } .procs .dot.bad { background: var(--red); } .procs .dot.off { background: var(--line); }
+
+/* the Signals tab's link check (settings.js linkCheck) */
+pre.diag { margin: 8px 0 0; max-height: 46vh; overflow: auto; padding: 10px 12px; border-radius: 12px; background: #0d0f12; color: #d6dae0;
+  font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+pre.diag:empty { display: none; }

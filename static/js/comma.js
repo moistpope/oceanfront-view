@@ -19,6 +19,15 @@ const LOG_MS = 1500, PROCS_MS = 5000, STATUS_MS = 5000, JOB_MS = 700;
 // repositories to start from (any https:// or git@ repository works); List branches shows what each has
 const FORKS = ['https://github.com/sunnypilot/sunnypilot.git', 'https://github.com/commaai/openpilot.git', 'https://github.com/moistpope/sunnypilot.git'];
 
+/** How a finished job ended: done, failed with its exit code, ran out of time, or lost its connection with the
+ *  result unknown (CommaManager checks a branch switch or pull afterwards, and reports done if it got there). */
+function jobState(j) {
+  if (j.code === 0) return 'done';
+  if (j.timedOut) return 'timed out';
+  if (j.lost && j.code === -1) return 'connection closed, result unknown';
+  return `failed (exit ${j.code})`;
+}
+
 export class CommaPanel {
   constructor(app) {
     this.app = app;
@@ -52,6 +61,18 @@ export class CommaPanel {
     const cs = st && st.op && st.op.carState, v = st && st.fisker && st.fisker.vehicle;
     return cs ? Math.abs(cs.vEgo || 0) : v && v.speedKph != null ? v.speedKph / 3.6 : 0;
   }
+
+  /** What runs on the comma, by its repository's name (sunnypilot, FrogPilot, openpilot…): the Comma tab works with any
+   *  fork. Until the install has been read, or if its remote doesn't say, the driving software. */
+  get pilot() {
+    const remote = this.info && this.info.git && this.info.git.remote;
+    const m = remote && remote.match(/([^/:]+?)(?:\.git)?\/?$/);
+    return m ? m[1] : 'the driving software';
+  }
+
+  /** The same, starting a sentence: a fork's name as its makers write it (sunnypilot stays lowercase), the fallback
+   *  capitalised. */
+  get Pilot() { const p = this.pilot; return p === 'the driving software' ? 'The driving software' : p; }
 
   get sshOk() { return !!(this.status && this.status.ssh && this.status.ssh.ok); }
 
@@ -132,7 +153,10 @@ export class CommaPanel {
       d ? el('div.kv', el('span', 'Comma'), el('span', `${d.hostname} at ${d.host}`), el('span', 'Bridge'), el('span', `webhud ${d.version}`))
         : el('p.desc', 'Not connected. The app looks for the comma on the car\'s hotspot by itself (its bridge, port 8088, ' +
           'must be on: Settings → Developer → Web HUD). The HUD doesn\'t need it: the car\'s own buses drive it.'),
-      el('div.btns', this.button('Look again', () => this.call('POST', '/search').then(() => this.app.toast('Looking for the comma'))))));
+      el('div.btns', this.button('Look again', () => this.call('POST', '/search').then(() => {
+        this.app.toast('Looking for the comma');
+        [1500, 3500, 7000].forEach(ms => setTimeout(() => this.active && this.refreshStatus(), ms));   // found in a second or two, usually
+      })))));
 
     const k = st.key;
     const keySec = el('div.section', el('h3', 'SSH key'));
@@ -166,12 +190,12 @@ export class CommaPanel {
     c.append(keySec);
 
     const ok = this.sshOk;
-    c.append(el('div.section', el('h3', 'openpilot'),
-      el('p.desc', 'Not while the car is moving. A restart takes openpilot down for half a minute or so.'),
+    c.append(el('div.section', el('h3', this.pilot === 'the driving software' ? 'Driving software' : this.pilot),
+      el('p.desc', `Not while the car is moving. A restart takes ${this.pilot} down for half a minute or so.`),
       el('div.btns',
         this.jobButton('Start', 'start', {}, null, !ok),
-        this.jobButton('Stop', 'stop', {}, 'Stop openpilot? It stays off until started again or the comma restarts.', !ok),
-        this.jobButton('Restart', 'restart', {}, 'Restart openpilot?', !ok),
+        this.jobButton('Stop', 'stop', {}, `Stop ${this.pilot}? It stays off until started again or the comma restarts.`, !ok),
+        this.jobButton('Restart', 'restart', {}, `Restart ${this.pilot}?`, !ok),
         this.jobButton('Reboot', 'reboot', {}, 'Reboot the comma?', !ok, '.danger'))));
     if (ok) this.summary(c);
   }
@@ -185,7 +209,7 @@ export class CommaPanel {
       if (!i) { sec.append(el('p.desc', this.infoError ? `Couldn't read the comma: ${this.infoError}` : 'Reading…')); return; }
       const p = i.params || {}, g = i.git || {};
       sec.append(el('div.kv',
-        el('span', 'openpilot'), el('span', `${i.running ? 'running' : 'stopped'}${p.Version ? ' · ' + p.Version : ''}`),
+        el('span', this.Pilot), el('span', `${i.running ? 'running' : 'stopped'}${p.Version ? ' · ' + p.Version : ''}`),
         el('span', 'Install'), el('span', `${g.branch || '?'} @ ${g.commit || '?'}${g.dirty ? ' (modified)' : ''}`),
         el('span', 'Remote'), el('span', g.remote || '—'),
         el('span', 'AGNOS'), el('span', i.agnos || '—'),
@@ -219,7 +243,7 @@ export class CommaPanel {
     const pre = el('pre.term', this.logText || 'Reading…');
     const lines = this.app.segmented([['200', '200 lines'], ['1000', '1000'], ['3000', '3000']], String(this.logLines), v => { this.logLines = Number(v); poll(); });
     const pause = el('button.btn', { onclick: () => { this.logPaused = !this.logPaused; pause.textContent = this.logPaused ? 'Resume' : 'Pause'; } }, this.logPaused ? 'Resume' : 'Pause');
-    c.append(el('p.desc', 'openpilot\'s tmux session on the comma ("comma"): the manager\'s and its processes\' output, as it scrolls.'),
+    c.append(el('p.desc', `${this.Pilot}'s tmux session on the comma ("comma"): the manager's and its processes' output, as it scrolls.`),
       lines, el('div', { style: { height: '10px' } }), pre, el('div.btns', pause));
     let first = true;
     const poll = async () => {
@@ -248,13 +272,13 @@ export class CommaPanel {
   procs(c) {
     if (this.needSsh(c)) return;
     const box = el('div');
-    c.append(el('p.desc', 'openpilot\'s processes as its manager reports them (managerState), with CPU and memory from the comma\'s /proc.'), box);
+    c.append(el('p.desc', `${this.Pilot}'s processes as its manager reports them (managerState), with CPU and memory from the comma's /proc.`), box);
     const draw = () => {
       box.innerHTML = '';
       const i = this.info;
       if (!i) { box.append(el('p.desc', this.infoError ? `Couldn't read the comma: ${this.infoError}` : 'Reading…')); return; }
       if (!i.processes) {
-        box.append(el('div.banner', i.running ? `No process list (${i.messagingError || 'managerState is silent'})` : 'openpilot isn\'t running.'));
+        box.append(el('div.banner', i.running ? `No process list (${i.messagingError || 'managerState is silent'})` : `${this.Pilot} isn't running.`));
       } else {
         const running = i.processes.filter(p => p.running).length;
         box.append(el('p.desc', `${running} of ${i.processes.length} running`),
@@ -332,7 +356,9 @@ export class CommaPanel {
     const restartBox = (id, label, on = true) => {
       const box = el('input', { type: 'checkbox', checked: on });
       this[id] = box;
-      return el('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', fontSize: '13px', marginTop: '8px' } }, box, label);
+      const text = el('span', typeof label === 'function' ? label() : label);
+      if (typeof label === 'function') this[id + 'Label'] = () => setText(text, label());   // follows what's typed or picked
+      return el('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', fontSize: '13px', marginTop: '8px' } }, box, text);
     };
 
     c.append(el('div.section', el('h3', 'Installed'), el('div.kv',
@@ -345,38 +371,22 @@ export class CommaPanel {
       el('span', 'Backup'), el('span', g.backup || 'none'),
     ), el('div.btns', this.button('Refresh', () => this.loadInfo()))));
 
-    c.append(el('div.section', el('h3', 'openpilot\'s updater'),
-      el('p.desc', 'The updater the device runs while offroad: it checks the branch it follows, downloads an update in the background and installs it when the comma next starts.'),
-      el('div.kv',
-        el('span', 'State'), el('span', p.UpdaterState || '—'),
-        el('span', 'Follows'), el('span', p.UpdaterTargetBranch || g.branch || '—'),
-        el('span', 'Update'), el('span', p.UpdateAvailable === '1' ? `ready: ${p.UpdaterNewDescription || ''}` : p.UpdaterFetchAvailable === '1' ? 'available to download' : 'none known'),
-        el('span', 'Last check'), el('span', p.LastUpdateTime || '—')),
-      el('div.btns',
-        this.jobButton('Check', 'update_check'),
-        this.jobButton('Download', 'update_download'),
-        p.UpdateAvailable === '1' ? this.jobButton('Reboot to install', 'reboot', {}, 'Reboot the comma to install the update?', false, '.primary') : null)));
+    c.append(this.updateSection(g));
 
-    c.append(el('div.section', el('h3', 'Git'),
-      el('p.desc', 'Straight on the checkout in /data/openpilot: fetch what\'s new, or pull it in (fast-forward only, with its submodules).'),
-      restartBox('pullRestart', 'Restart openpilot after pulling'),
-      el('div.btns', this.jobButton('Fetch', 'fetch'),
-        this.jobButton('Pull', 'pull', () => ({ restart: this.pullRestart.checked }), 'Pull the latest of this branch into the comma\'s install?'))));
-
-    const branchIn = el('input.cm-field', { placeholder: 'Branch name', value: this.branchDraft || '', oninput: e => { this.branchDraft = e.target.value; }, list: 'cm-branches' });
+    const branchIn = el('input.cm-field', { placeholder: 'Branch name', value: this.branchDraft || '', oninput: e => { this.branchDraft = e.target.value; this.branchRestartLabel && this.branchRestartLabel(); }, list: 'cm-branches' });
     const datalist = el('datalist', { id: 'cm-branches' }, (this.branches || []).map(b => el('option', { value: b })));
     c.append(el('div.section', el('h3', 'Branch'),
-      el('p.desc', `Switch the install to another branch of ${g.remote || 'its repository'}. The updater is pointed at it too.`),
+      el('p.desc', `Switch the install to another branch of ${g.remote ? g.remote.replace(/^(https?:\/\/|git@)[^/:]+[/:]/, '').replace(/\.git$/, '') : 'its repository'}. The updater is pointed at it too.`),
       branchIn, datalist,
       this.branches ? el('p.desc', `${this.branches.length} branches on the remote`) : null,
-      restartBox('branchRestart', 'Restart openpilot when done'),
+      restartBox('branchRestart', () => `Restart ${this.pilot}${(this.branchDraft || '').trim() ? ' on ' + this.branchDraft.trim() : ''} when done`),
       el('div.btns',
         this.button('List branches', async () => { this.branches = (await this.call('GET', '/branches')).branches; }),
         this.jobButton('Switch', 'branch', () => ({ branch: branchIn.value.trim(), restart: this.branchRestart.checked }),
           () => `Switch the comma to ${branchIn.value.trim()}? Local changes in /data/openpilot are discarded.`))));
 
-    const urlIn = el('input.cm-field', { placeholder: 'https://github.com/owner/repo.git', value: this.forkUrl || '', oninput: e => { this.forkUrl = e.target.value; } });
-    const forkBranch = el('input.cm-field', { placeholder: 'Branch', value: this.forkBranch || '', oninput: e => { this.forkBranch = e.target.value; }, list: 'cm-fork-branches' });
+    const urlIn = el('input.cm-field', { placeholder: 'https://github.com/owner/repo.git', value: this.forkUrl || '', oninput: e => { this.forkUrl = e.target.value; this.forkRebootLabel && this.forkRebootLabel(); } });
+    const forkBranch = el('input.cm-field', { placeholder: 'Branch', value: this.forkBranch || '', oninput: e => { this.forkBranch = e.target.value; this.forkRebootLabel && this.forkRebootLabel(); }, list: 'cm-fork-branches' });
     const forkList = el('datalist', { id: 'cm-fork-branches' }, (this.forkBranches || []).map(b => el('option', { value: b })));
     c.append(el('div.section', el('h3', 'Install a fork'),
       el('p.desc', 'Clone another repository and branch beside the current install, then swap it in. The current install is kept as the backup ' +
@@ -386,7 +396,11 @@ export class CommaPanel {
       u.replace(/^https:\/\/github.com\//, '').replace(/\.git$/, '')))),
       urlIn, forkBranch, forkList,
       this.forkBranches ? el('p.desc', `${this.forkBranches.length} branches in ${this.forkBranchesOf}`) : null,
-      restartBox('forkReboot', 'Reboot into it when done'),
+      restartBox('forkReboot', () => {
+        // named after the fork going in, from its URL as typed
+        const m = (this.forkUrl || '').trim().match(/([^/:]+?)(?:\.git)?\/?$/), b = (this.forkBranch || '').trim();
+        return `Reboot the comma into ${m ? m[1] : 'it'}${b && (!m || b.toLowerCase() !== m[1].toLowerCase()) ? ' (' + b + ')' : ''} when done`;
+      }),
       el('div.btns',
         this.button('List branches', async () => {
           const u = urlIn.value.trim();
@@ -394,17 +408,38 @@ export class CommaPanel {
           this.forkBranchesOf = u;
         }, { key: 'forkBranches', disabled: !this.sshOk }),
         this.jobButton('Install', 'install', () => ({ url: urlIn.value.trim(), branch: forkBranch.value.trim(), restart: this.forkReboot.checked }),
-          () => `Install ${urlIn.value.trim()} (${forkBranch.value.trim()}) on the comma? openpilot stops while it swaps, and the current install becomes the backup.`, false, '.primary'),
+          () => `Install ${urlIn.value.trim()} (${forkBranch.value.trim()}) on the comma? ${this.Pilot} stops while it swaps, and the current install becomes the backup.`, false, '.primary'),
         g.backup ? this.jobButton('Restore the backup', 'restore', () => ({ restart: this.forkReboot.checked }),
           `Swap the backup (${g.backup}) back in? The current install becomes the backup.`) : null)));
 
+    // the ways round the Update button: openpilot's own updater, and git's two steps on their own
+    c.append(el('details.section', el('summary', el('h3', { style: { display: 'inline' } }, 'Advanced')),
+      el('h4', 'Built-in updater'),
+      el('p.desc', 'comma\'s own updater, which runs by itself while the car is off: it checks the branch it follows, downloads an update in the ' +
+        'background and installs it the next time the comma starts. Update above does the same at once.'),
+      el('div.kv',
+        el('span', 'State'), el('span', p.UpdaterState || '—'),
+        el('span', 'Follows'), el('span', p.UpdaterTargetBranch || g.branch || '—'),
+        el('span', 'Update'), el('span', p.UpdateAvailable === '1' ? `ready: ${p.UpdaterNewDescription || ''}` : p.UpdaterFetchAvailable === '1' ? 'available to download' : 'none known'),
+        el('span', 'Last check'), el('span', p.LastUpdateTime || '—')),
+      el('div.btns',
+        this.jobButton('Check', 'update_check'),
+        this.jobButton('Download', 'update_download'),
+        p.UpdateAvailable === '1' ? this.jobButton('Reboot to install', 'reboot', {}, 'Reboot the comma to install the update?', false, '.primary') : null),
+      el('h4', 'Git'),
+      el('p.desc', 'Update\'s two steps on their own: Fetch only looks for new commits (nothing on the comma changes); Pull brings them in ' +
+        '(fast-forward only, with its submodules).'),
+      restartBox('pullRestart', `Restart ${this.pilot} after pulling`),
+      el('div.btns', this.jobButton('Fetch', 'fetch'),
+        this.jobButton('Pull', 'pull', () => ({ restart: this.pullRestart.checked }), 'Pull the latest of this branch into the comma\'s install?'))));
+
     c.append(el('div.section', el('h3', 'Panda'),
-      el('p.desc', 'The panda\'s firmware from this install (panda/board). openpilot flashes it by itself when it starts with a different one; ' +
-        'flashing here stops openpilot, builds and flashes, and starts it again. Recover is for a panda stuck in its bootloader (DFU).'),
+      el('p.desc', `The panda's firmware from this install (panda/board). ${this.Pilot} flashes it by itself when it starts with a different one; ` +
+        `flashing here stops ${this.pilot}, builds and flashes, and starts it again. Recover is for a panda stuck in its bootloader (DFU).`),
       el('div.btns',
         this.jobButton('Build', 'panda_build', {}, 'Build the panda firmware? It takes a few minutes of CPU.'),
-        this.jobButton('Build & flash', 'panda_flash', {}, 'Stop openpilot, build and flash the panda, and start openpilot again?', false, '.primary'),
-        this.jobButton('Recover (DFU)', 'panda_recover', {}, 'Recover the panda from DFU? openpilot stops meanwhile.'))));
+        this.jobButton('Build & flash', 'panda_flash', {}, `Stop ${this.pilot}, build and flash the panda, and start ${this.pilot} again?`, false, '.primary'),
+        this.jobButton('Recover (DFU)', 'panda_recover', {}, `Recover the panda from DFU? ${this.Pilot} stops meanwhile.`))));
   }
 
   // ---- debug ----------------------------------------------------------------------------------------------
@@ -424,7 +459,7 @@ export class CommaPanel {
     c.append(jobs);
     this.call('GET', '/jobs').then(r => {
       jobs.append(r.jobs.length ? el('div.kv', r.jobs.flatMap(j => [el('span', new Date(j.startedAt).toLocaleTimeString()),
-        el('a', { href: '#', onclick: e => { e.preventDefault(); this.showJob(j.id); } }, `${j.title} · ${j.done ? (j.code === 0 ? 'done' : 'failed (' + j.code + ')') : 'running'}`)]))
+        el('a', { href: '#', onclick: e => { e.preventDefault(); this.showJob(j.id); } }, `${j.title} · ${j.done ? jobState(j) : 'running'}`)]))
         : el('p.desc', 'None yet.'));
     }).catch(() => {});
     c.append(el('div.section', el('h3', 'What the app read'), el('pre.term.short', this.info ? JSON.stringify(this.info, null, 1) : 'Nothing yet.'),
@@ -434,6 +469,50 @@ export class CommaPanel {
   // ---- jobs -----------------------------------------------------------------------------------------------
 
   /** A button that starts a job: args an object or a function giving one; ask a question (or a function giving one) to confirm. */
+  // Update: look (fetch, and what the new commits are and touch), then Update or Cancel
+  updateSection(g) {
+    const sec = el('div.section', el('h3', 'Update'));
+    const pv = this.preview;
+    if (!pv || pv.branch !== g.branch) {
+      sec.append(el('p.desc', `Looks for new commits on ${g.branch || 'this branch'} and shows what they change before anything is installed.`),
+        el('div.btns', this.button('Check for updates', async () => { this.preview = await this.call('GET', '/preview'); this.preview.at = Date.now(); },
+          { key: 'preview', disabled: !this.sshOk || (this.job && !this.job.done), cls: '.primary' })));
+      return sec;
+    }
+    const again = this.button('Check again', async () => { this.preview = await this.call('GET', '/preview'); this.preview.at = Date.now(); }, { key: 'preview' });
+    const cancel = el('button.btn', { onclick: () => { this.preview = null; this.rerender(); } }, pv.behind ? 'Cancel' : 'Close');
+    if (pv.error || !pv.upstream || !Number.isFinite(pv.behind)) {
+      sec.append(el('p.desc', pv.error || 'The comma\'s answer didn\'t say what\'s new. Try again.'), el('div.btns', again, cancel));
+      return sec;
+    }
+    if (!pv.behind) {
+      sec.append(el('p.desc', `Up to date with ${pv.upstream}` + (pv.ahead ? `, and ${pv.ahead} commit${pv.ahead > 1 ? 's' : ''} ahead of it (local ones)` : '') + '.'),
+        el('div.btns', again, cancel));
+      return sec;
+    }
+    const n = pv.behind;
+    sec.append(el('p.desc', `${n} new commit${n > 1 ? 's' : ''} on ${pv.upstream}` + (pv.commits.length < n ? ` (the latest ${pv.commits.length} shown)` : '') + ':'));
+    sec.append(el('div.kv', pv.commits.flatMap(c => [
+      el('span', c.hash),
+      el('span', c.subject, el('small', ` · ${c.author}${c.date ? ', ' + new Date(c.date).toLocaleDateString() : ''}`)),
+    ])));
+    if (pv.areas.length) {
+      sec.append(el('p.desc', { style: { marginTop: '10px' } }, 'What changes: ' + pv.areas.slice(0, 12)
+        .map(a => pv.submodules.includes(a.area) ? `${a.area} (new version)` : `${a.area} (${a.files} file${a.files > 1 ? 's' : ''})`).join(', ') +
+        (pv.areas.length > 12 ? `, and ${pv.areas.length - 12} more` : '') + '.'));
+    }
+    if (!pv.prebuilt) sec.append(el('p.desc', `${this.Pilot} is built on the comma, so the restart rebuilds what changed: that can take a few minutes.`));
+    if (pv.ahead) {
+      sec.append(el('div.banner', `The comma also has ${pv.ahead} commit${pv.ahead > 1 ? 's' : ''} of its own that ${pv.upstream} doesn't. ` +
+        'Update only moves forward, so it will stop without changing anything; Switch branch below replaces the install with the remote\'s.'));
+    }
+    sec.append(el('div.btns',
+      this.jobButton(`Update (${n})`, 'pull', () => { this.preview = null; return { restart: true }; }, null, false, '.primary'),
+      cancel));
+    sec.append(el('p.desc', `Update pulls them in and restarts ${this.pilot}. Not while driving.`));
+    return sec;
+  }
+
   jobButton(label, action, args = {}, ask = null, disabled = false, cls = '') {
     return el('button.btn' + cls, {
       disabled: disabled || !this.sshOk || (this.job && !this.job.done),
@@ -469,7 +548,7 @@ export class CommaPanel {
         if (this.job !== j) return;
         j.output += r.output;
         if (j.output.length > 400000) j.output = j.output.slice(-300000);
-        Object.assign(j, { title: r.title, offset: r.offset, done: r.done, code: r.code });
+        Object.assign(j, { title: r.title, offset: r.offset, done: r.done, code: r.code, timedOut: r.timedOut, lost: r.lost });
         this.drawJob();
         if (r.done) {
           clearInterval(this.jobTimer);
@@ -492,7 +571,7 @@ export class CommaPanel {
     if (!node) return;
     node.innerHTML = '';
     if (!j) return;
-    const state = j.done ? (j.code === 0 ? 'done' : `failed (exit ${j.code})`) : 'running…';
+    const state = j.done ? jobState(j) : 'running…';
     const pre = el('pre.term.short', j.output || '…');
     node.append(el('div.section', el('h3', j.title || 'Job', el('small', state)), pre,
       j.done ? el('div.btns', el('button.btn', { onclick: () => { this.job = null; this.drawJob(); } }, 'Dismiss')) : null));

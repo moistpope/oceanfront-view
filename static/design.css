@@ -415,3 +415,12 @@ html.fo { font-size: 16px; }
 .fo-hvac .fo-temp__ctl .fo-ib .fo-icon { width: 1.5rem; height: 1.5rem; }
 .fo-hvac .fo-temp.synced b { color: var(--fo-ink-2); }
 .fo-hvac .fo-cbtn.off, .fo-hvac .fo-heat.off { color: var(--fo-ink-3); }
+
+/* what a control does on the car (carcontrols.js kindOf): a small tag after its label */
+.fo-tag { display: inline-block; margin-left: .5rem; padding: .0625rem .4375rem; border-radius: 999px; vertical-align: .125rem;
+  font: 500 .75rem/1.4 var(--fo-font); letter-spacing: .02em; border: .0625rem solid currentColor; color: var(--fo-ink-2); white-space: nowrap; }
+.fo-tag.sends { color: var(--fo-accent); }
+.fo-tag.comma { color: #0a9fb2; }
+.fo-tag.demo { border-style: dashed; }
+.fo-tile .fo-tag { display: block; width: max-content; margin: .375rem auto 0; }
+.fo .off .fo-tag { color: var(--fo-ink-3); }

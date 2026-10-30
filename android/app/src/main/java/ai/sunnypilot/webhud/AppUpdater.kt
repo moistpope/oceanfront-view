@@ -104,7 +104,7 @@ class AppUpdater(private val context: Context, private val root: RootShell, priv
                 latest = parseRelease(JSONObject(get(LATEST_URL)))
                 checkError = null
             } catch (e: IOException) {
-                checkError = if (e.message?.startsWith("HTTP 404") == true) "the repository has no releases yet" else "couldn't reach GitHub: ${e.message}"
+                checkError = if (e.message?.startsWith("HTTP 404") == true) "GitHub has no releases it will show for $REPO (it's private, or has none yet)" else "couldn't reach GitHub: ${e.message}"
             } catch (e: Exception) {
                 checkError = e.message ?: e.javaClass.simpleName
             } finally {
@@ -225,8 +225,13 @@ class AppUpdater(private val context: Context, private val root: RootShell, priv
         val log = "/data/local/tmp/oceanfront-update.log"
         val staged = root.run("rm -f $log; cp '${apk.path}' $tmp && chmod 644 $tmp && echo staged", timeoutMs = 30_000) ?: return false
         if (!staged.contains("staged")) throw IOException("couldn't stage the APK for pm: ${staged.trim()}")
-        val main = "${context.packageName}/.MainActivity"
-        root.run("(pm install -r $tmp > $log 2>&1; echo \"exit:\$?\" >> $log; rm -f $tmp; am start -n $main) </dev/null >/dev/null 2>&1 &", timeoutMs = 5000)
+        // the activity by its class name, not ".MainActivity": that only names it while the package (applicationId)
+        // is the code's namespace, and a build under another package would start nothing. setsid takes the shell out
+        // of this app's process group, which Android kills when the install replaces it (plain sh where there's no
+        // setsid); the pause lets the package settle.
+        val main = "${context.packageName}/${MainActivity::class.java.name}"
+        val script = "pm install -r $tmp > $log 2>&1; echo \"exit:\$?\" >> $log; rm -f $tmp; sleep 2; am start -n $main"
+        root.run("S=\$(command -v setsid); \$S sh -c '$script' </dev/null >/dev/null 2>&1 &", timeoutMs = 5000)
             ?: throw IOException("the root shell went away")
         val deadline = nowMs() + ROOT_INSTALL_MS
         while (nowMs() < deadline) {

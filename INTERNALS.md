@@ -268,7 +268,8 @@ One-way roads that end at a node on our road (on-ramps, merging lanes) are inclu
 
 Under all of it lies the map itself: every road within 320 m of the car (`roadnet.js`, from the snapshot's
 `map.roads`, rebuilt by the worker once the car has moved 40 m) as ground-fixed strips in their own widths
-with edges, centerlines and lane boundaries. This is the one source of lane lines for every road, the one
+with edges, centerlines and lane boundaries. Their meshes are laid out in `roadnetworker.js`, off the page's
+thread (a town's network took 40-60 ms there on the head unit, a dropped frame or three each time). This is the one source of lane lines for every road, the one
 we're on included (so nothing toggles when the match or the horizon moves from one way to the next); the
 field only highlights the drawn lane's two lines in the HMI's blue or red on top of them, and draws the
 junction fillets. Lines open where roads meet: an edge between the fillets' tangent points (the geometry the

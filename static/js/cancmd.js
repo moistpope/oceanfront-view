@@ -3,7 +3,7 @@
 // matrices) can be built here, and the app and its helper each check the same allowlist again before
 // anything goes out. The messages come in two kinds:
 //   event    the head unit sends them only when the driver touches something, three times 20 ms apart
-//            (the matrix's OnWriteWithRepetition): a request of ours is one such touch;
+//            (the matrix's OnWriteWithRepetition): a request of ours is one such touch, then released;
 //   cyclic   the head unit sends them every 100 ms with "no request" values between touches (seat
 //            heat and moves, the liftgate): a request of ours goes out a few cycles and is then
 //            followed by the idle frame, so the car doesn't keep acting on it. Held buttons (seat
@@ -15,6 +15,7 @@ import { TX_MESSAGES } from './ibus_tables.js';
 const EVENT_REPEAT = 3, EVENT_GAP_MS = 20;   // the matrix: Nr. of repetitions 3, delay 20 ms
 const PULSE_REPEAT = 3;                      // cycles a cyclic request is held before the idle frame
 const HOLD_MS = 100;                         // the cyclic messages' cycle time
+const RELEASE_MS = 200;                      // an event request's release frame after its first copy (Pulse's own timing)
 
 const BY_ADDR = new Map(TX_MESSAGES.map(m => [m.addr, { ...m, byName: new Map(m.signals.map(s => [s.name, s])) }]));
 
@@ -94,7 +95,11 @@ export class CarCommands {
   /** An event message: one touch. Returns false (and says why) when it couldn't go out. */
   request(addr, values) {
     if (!this.available) { this.app.toast(this.why); return false; }
-    return this._send(addr, encode(addr, values), EVENT_REPEAT, EVENT_GAP_MS);
+    if (!this._send(addr, encode(addr, values), EVENT_REPEAT, EVENT_GAP_MS)) return false;
+    // then the frame with nothing requested, as Pulse's own app does after each of its requests (0x4E, 0x530: the
+    // request, ~200 ms, then the same message released), so the next request is a fresh press
+    setTimeout(() => this._send(addr, encode(addr), 1, EVENT_GAP_MS), RELEASE_MS);
+    return true;
   }
 
   /** A cyclic message: the request for a few cycles, then its idle frame. */

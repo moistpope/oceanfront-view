@@ -1,4 +1,4 @@
-import { cameraSignUnit, leftTraffic } from './regional.js';
+import { cameraSignUnit, leftTraffic, signStyle } from './regional.js';
 // Traffic lights, signs and road markings, placed where they most likely are.
 //
 // All of it comes from the car's ADAS camera (fisker.tlr / fisker.tsr / fisker.road), which gives
@@ -198,7 +198,7 @@ function turnArrow(ctx, w, dir) {   // a turn arrow (dir -1 left, +1 right) or U
 }
 
 const signTextures = new Map();
-// face texture + aspect for a sign spec ({kind:'limit', value, unit, plate} | {kind:'prohibited', name} |
+// face texture + aspect for a sign spec ({kind:'limit', value, unit, style: 'eu'|'us', plate} | {kind:'prohibited', name} |
 // {kind:'stop', all} | {kind:'yield'} | {kind:'rail'})
 export function signFace(spec) {
   const key = JSON.stringify(spec);
@@ -239,7 +239,7 @@ export function signFace(spec) {
         ctx.restore();
       }
     }) };
-  } else if (spec.kind === 'limit' && spec.unit === 'mph') {
+  } else if (spec.kind === 'limit' && (spec.style ? spec.style === 'us' : spec.unit === 'mph')) {
     const plate = spec.plate ? 0.32 : 0;
     out = { aspect: 0.8 / (1 + plate), tex: canvasTexture(256, Math.round(320 * (1 + plate)), (ctx, w) => {
       const draw = (y0, h, lines) => {
@@ -375,7 +375,8 @@ export class RoadFurniture {
     const moving = Math.abs(v) > 1.5;
     if (showSigns && f) {
       const plate = { School: 'SCHOOL', School_when_flashing: 'SCHOOL', End_of_Speed_Limit: 'END', Where_Workers_Present: 'WORK ZONE' }[tsr.condition];
-      const limit = tsr.speedLimit ? { kind: 'limit', value: tsr.speedLimit, unit: cameraSignUnit(settings, tsr) || 'kmh', ...(plate ? { plate } : {}) } : null;
+      const unit = cameraSignUnit(settings, tsr) || 'kmh';
+      const limit = tsr.speedLimit ? { kind: 'limit', value: tsr.speedLimit, unit, style: signStyle(settings, unit, f), ...(plate ? { plate } : {}) } : null;
       const read = tsr.state && tsr.state.n === 'Vision_Mode' && !(this.prev.state === 'Vision_Mode');
       const changed = limit && this.prev.limit && JSON.stringify(limit) !== this.prev.limit;
       if (limit && moving && (changed || read)) this._spawn(limit, f, road, vehicle, toScene);

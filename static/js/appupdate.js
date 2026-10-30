@@ -30,13 +30,15 @@ export class AppUpdate {
       method, headers: { 'X-App-Token': this.token, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || `${r.status}`);
+    if (!r.ok) throw new Error(j.error ? `${j.error} (${r.status})` : `the app answered ${r.status} ${r.statusText || ''} to ${method} /app/update${path}`.trim());
     return j;
   }
 
-  /** The section's contents: a fresh node each time the sheet is built, kept up to date while it's shown. */
-  render() {
-    this.node = el('div.fo-appupdate');
+  /** The section's contents: a fresh node each time the sheet is built, kept up to date while it's shown. `plain`:
+   *  in the settings sheet's own style (Settings > About) rather than the car controls' design (the Software sheet). */
+  render(plain = false) {
+    this.plain = plain;
+    this.node = el(plain ? 'div' : 'div.fo-appupdate');
     if (!this.inApp) {
       this.node.append(
         el('div.fo-rows', el('div.fo-row', el('div.fo-row__lbl', el('b', 'Version')), el('span.fo-row__val', 'Web page'))),
@@ -102,11 +104,16 @@ export class AppUpdate {
     const n = this.node;
     if (!n) return;
     const st = this.st;
-    const row = (label, val, sub, cls) => el('div.fo-row', el('div.fo-row__lbl', el('b', label), sub ? el(`small.fo-row__sub${cls ? '.' + cls : ''}`, sub) : null), val ? el('span.fo-row__val', val) : null);
+    const plain = this.plain;
+    const row = plain
+      ? (label, val, sub) => [el('span', label), el('span', val || '', sub ? el('small', ` · ${sub}`) : null)]
+      : (label, val, sub, cls) => el('div.fo-row', el('div.fo-row__lbl', el('b', label), sub ? el(`small.fo-row__sub${cls ? '.' + cls : ''}`, sub) : null), val ? el('span.fo-row__val', val) : null);
+    const rows = (...r) => (plain ? el('div.kv', r.flat()) : el('div.fo-rows', r));
+    const note = (text, bad = false) => (plain ? el(bad ? 'div.banner' : 'p.desc', { style: { whiteSpace: 'pre-line', marginTop: '10px' } }, text) : el(bad ? 'p.fo-note.bad' : 'p.fo-note', { style: { whiteSpace: 'pre-line' } }, text));
     const kids = [];
     if (!st) {
-      kids.push(el('div.fo-rows', row('Version', '…')));
-      if (this.error) kids.push(el('p.fo-note', `Couldn't ask the app: ${this.error}`));
+      kids.push(rows(row('Version', '…')));
+      if (this.error) kids.push(note(`Couldn't ask the app: ${this.error}`));
       n.replaceChildren(...kids);
       return;
     }
@@ -114,39 +121,42 @@ export class AppUpdate {
     let latest, latestSub = null, latestCls = null;
     if (st.checking) latest = 'Checking…';
     else if (st.checkError) { latest = '—'; latestSub = st.checkError; }
+    else if (!l && this.error) { latest = '—'; latestSub = this.error; }
     else if (!l) latest = 'Not checked';
     else if (st.newer) { latest = `${l.version} · ${fmtBytes(l.size)}`; latestSub = `Update available · released ${day(Date.parse(l.published))}`; latestCls = 'ok'; }
-    else { latest = l.version; latestSub = 'Up to date'; latestCls = 'ok'; }
-    kids.push(el('div.fo-rows',
+    else { latest = l.version; latestSub = 'No update available'; latestCls = 'ok'; }
+    kids.push(rows(
       row('Version', st.installed.version, `Installed ${day(st.installed.updated)}`),
       row('Latest release', latest, latestSub, latestCls),
     ));
 
     if (st.newer && l.notes) {
-      const text = l.notes.replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim();
-      kids.push(el('p.fo-note', text.length > NOTES_MAX ? text.slice(0, NOTES_MAX - 1).trimEnd() + '…' : text));
+      // markdown's marks off, its lines kept: headings and quotes only at a line's start (a > inside is just text), bullets as •
+      const text = l.notes.split(/\r?\n/).map(line => line.replace(/^\s*(#+|>)\s*/, '').replace(/^\s*[-*+]\s+/, '• ').replace(/[*_`]/g, '').trimEnd())
+        .filter((line, i, a) => line || (i > 0 && a[i - 1])).join('\n').trim();
+      kids.push(note(text.length > NOTES_MAX ? text.slice(0, NOTES_MAX - 1).trimEnd() + '…' : text));
     }
 
     if (st.state === 'downloading') {
       const frac = st.total > 0 ? Math.min(1, st.done / st.total) : 0;
-      kids.push(el('div.fo-progress', el('i', { style: { width: `${(frac * 100).toFixed(1)}%` } })));
-      kids.push(el('p.fo-note', `Downloading ${fmtBytes(st.done)} of ${fmtBytes(st.total)}`));
+      if (!plain) kids.push(el('div.fo-progress', el('i', { style: { width: `${(frac * 100).toFixed(1)}%` } })));
+      kids.push(note(`Downloading ${fmtBytes(st.done)} of ${fmtBytes(st.total)} (${Math.round(frac * 100)}%)`));
     } else if (st.state === 'verifying') {
-      kids.push(el('p.fo-note', 'Checking the download…'));
+      kids.push(note('Checking the download…'));
     } else if (st.state === 'installing') {
-      kids.push(el('p.fo-note', st.root ? 'Installing. The HUD restarts in a moment.' : 'Installing…'));
+      kids.push(note(st.root ? 'Installing. The HUD restarts in a moment.' : 'Installing…'));
     } else if (st.state === 'confirm') {
-      kids.push(el('p.fo-note', 'Android asks to install the update: confirm it on screen. The first time it may ask to allow this app to install apps.'));
+      kids.push(note('Android asks to install the update: confirm it on screen. The first time it may ask to allow this app to install apps.'));
     } else if (st.state === 'failed') {
-      kids.push(el('p.fo-note.bad', `The update failed: ${st.error}`));
+      kids.push(note(`The update failed: ${st.error}`, true));
     }
-    if (this.error) kids.push(el('p.fo-note.bad', this.error));
+    if (this.error && l) kids.push(note(this.error, true));   // without a release it shows in the row above
 
-    const checkBtn = el('button.fo-btn', { onclick: () => this.check() }, st.checking ? 'Checking…' : 'Check for updates');
+    const checkBtn = el(plain ? 'button.btn' : 'button.fo-btn', { onclick: () => this.check() }, st.checking ? 'Checking…' : 'Check for updates');
     checkBtn.disabled = st.checking || this.busy;
-    const btns = el('div.fo-btns', checkBtn);
+    const btns = el(plain ? 'div.btns' : 'div.fo-btns', checkBtn);
     if (st.newer) {
-      const inst = el('button.fo-btn.primary', { onclick: () => this.install() }, this.busy ? 'Updating…' : `Install ${l.version}`);
+      const inst = el(plain ? 'button.btn.primary' : 'button.fo-btn.primary', { onclick: () => this.install() }, this.busy ? 'Updating…' : `Install ${l.version}`);
       inst.disabled = this.busy;
       btns.append(inst);
     }

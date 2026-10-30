@@ -64,7 +64,10 @@ export class Settings {
   async show(tab, keep = false) {
     keep = keep && tab === this.tab;
     this.tab = tab;
-    $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    $$('#tabs button').forEach(b => {
+      b.classList.toggle('on', b.dataset.tab === tab);
+      if (b.dataset.tab === tab) b.scrollIntoView({ inline: 'nearest', block: 'nearest' });   // a narrow bar scrolls to it
+    });
     if (tab !== 'signals') this.app.subscribeRaw('ibus', []);
     if (tab !== 'comma') this.comma.leave();
     const render = {
@@ -236,6 +239,29 @@ export class Settings {
       body.append(el('div.section', el('h3', 'Fisker ACC'),
         el('p.desc', 'The ACC defaults require an updated comma WebHUD server.')));
     }
+    if ('FiskerSpeedLimitUnit' in p) {
+      // what the comma tells the ADAS in the head unit's map metadata (ICC_0x362): the ADAS reads the unit of the
+      // speed-limit signs from it, and UK head units send it blank (km/h), so 30 mph signs set ACC to 30 km/h
+      const countries = [[0, 'As the head unit sends'], [826, 'United Kingdom'], [372, 'Ireland'], [840, 'United States'],
+        [124, 'Canada'], [276, 'Germany'], [250, 'France'], [528, 'Netherlands'], [56, 'Belgium'], [40, 'Austria'],
+        [756, 'Switzerland'], [208, 'Denmark'], [578, 'Norway'], [752, 'Sweden']];
+      const country = Number(p.FiskerCountryCode) || 0;
+      if (!countries.some(([c]) => c === country)) countries.push([country, `Code ${country}`]);
+      body.append(el('div.section',
+        el('h3', 'Speed-limit signs (ADAS)'),
+        el('p.desc', 'What the comma tells the ADAS about where the car is, for the signs its camera reads and auto speed. ' +
+          'Applied at the next car start. In the UK: Follow dash (or mph), Left, United Kingdom.'),
+        el('div.rows',
+          el('div.row', el('div.lbl', el('b', 'Sign units'), el('small', 'Follow dash uses the cluster\'s mph / km/h setting.')),
+            this.app.segmented([['0', 'Follow dash'], ['1', 'mph'], ['2', 'km/h'], ['3', 'Head unit']], String(p.FiskerSpeedLimitUnit ?? 0),
+              v => put({ FiskerSpeedLimitUnit: Number(v) }))),
+          el('div.row', el('div.lbl', el('b', 'Traffic side'), el('small', 'The side of the road the car drives on.')),
+            this.app.segmented([['0', 'Head unit'], ['1', 'Left'], ['2', 'Right']], String(p.FiskerTrafficSide ?? 0),
+              v => put({ FiskerTrafficSide: Number(v) }))),
+          el('div.row', el('div.lbl', el('b', 'Country'), el('small', 'The country the ADAS reads signs for.')),
+            el('select', { onchange: (e) => put({ FiskerCountryCode: Number(e.target.value) }) },
+              countries.map(([c, n]) => el('option', { value: c, selected: c === country }, n)))))));
+    }
     body.append(el('div.section', el('div.rows',
       el('div.row', el('div.lbl', el('b', 'Experimental mode'), el('small', 'End-to-end longitudinal from the driving model.')),
         this.app.switch(!!p.ExperimentalMode, v => put({ ExperimentalMode: v }))),
@@ -284,6 +310,9 @@ export class Settings {
     body.append(el('div.section', el('h3', 'Camera speed-sign units'),
       el('p.desc', 'Units of the number read from signs, before display conversion. Choose mph for UK signs if Follow car converts them incorrectly.'),
       this.app.segmented([['auto', 'Follow car'], ['mph', 'mph'], ['kmh', 'km/h']], s.cameraSignUnits || 'auto', v => set('cameraSignUnits', v))));
+    body.append(el('div.section', el('h3', 'Speed-sign style'),
+      el('p.desc', 'The speed limit sign drawn on the HUD and by the road. Follow units uses the US sign for mph, except with left-hand (UK) traffic.'),
+      this.app.segmented([['auto', 'Follow units'], ['round', 'Round (UK/EU)'], ['us', 'US']], s.signStyle || 'auto', v => set('signStyle', v))));
     const paint = oceanPaint(s.egoPaint);
     body.append(el('div.section', el('h3', 'Paint', el('small', `${paint.name} · ${paint.finish.toLowerCase()}`)),
       el('div.swatches', OCEAN_PAINTS.map(p => el('button.swatch' + (p === paint ? '.on' : ''),
@@ -413,6 +442,9 @@ export class Settings {
         'speed over the ground and relative, heading and size, in m, m/s and degrees. The ADAS reports no speeds: those are this view\'s estimate.'],
       ['demoInfotainment', 'Demo music & navigation', 'A made-up playlist and route in the music and navigation cards, the next turn ' +
         'coming nearer as the car drives, for trying them without the head unit.'],
+      ['carDemo', 'Demo car controls', 'Also show the car-control menus\' mockups: controls with nothing on the car behind them (Connectivity, ' +
+        'Navigation, Profiles, the climate temperatures, Hollywood Mode...), tagged Demo. Off, the menus hold only what sends to the car, ' +
+        'reads from it, or can\'t be set from here and says why.'],
       ['demoCarState', 'Demo live car state', 'Fill the "From the car" read-out in the car-control menus with made-up values, ' +
         'for trying it without the car\'s CAN link.'],
       ['showFps', 'Frame rate', 'Frames per second under the status card. Tap it for the slowest frame, the HUD\'s own script time per frame, ' +
@@ -497,6 +529,24 @@ export class Settings {
   // The car's buses as the app reads them (the IBUS DBC, decoded in the worker; the messages the app lets through),
   // or the comma's ADAS bus (the ADASBUS DBC) while it's connected. An IBUS2 message the comma's ADAS bus is giving
   // says so: the worker takes it from the comma then, complete, rather than from the gateway's mirror.
+  // Why the car controls' sends might not reach the car: what was sent and what the CAN helper answered, and the
+  // interfaces as the kernel has them (bus state, listen-only, error counters, frames out). Copy it into a chat.
+  linkCheck() {
+    const out = el('pre.diag');
+    const app = window.WebHudApp;
+    const run = () => {
+      try { out.textContent = app.canDiag(); } catch (e) { out.textContent = `Couldn't check: ${e.message}`; }
+    };
+    const copy = () => navigator.clipboard?.writeText(out.textContent).then(() => this.app.toast('Copied'), () => this.app.toast('Couldn\'t copy: select the text instead'));
+    return el('div.section',
+      el('h3', 'Sending to the car'),
+      el('p.desc', 'Try a car control (lock, a window, a seat), then check here: it shows what went out, what the CAN helper said, and the state of the CAN chips.'),
+      el('div.row', el('div.lbl', el('small', app && app.canDiag ? '' : 'Only in the app on the car')),
+        el('button.btn', { disabled: !(app && app.canDiag), onclick: run }, 'Check the link'),
+        el('button.btn', { onclick: copy }, 'Copy')),
+      out);
+  }
+
   renderSignals() {
     const body = this.body;
     const adas = this.sigBus === 'ADAS';
@@ -513,6 +563,7 @@ export class Settings {
     const messages = dbc.messages.filter(m => !ids || ids.has(m.address));
     const filter = el('input.sig-filter', { type: 'search', placeholder: 'Filter messages or signals (e.g. Obj1, VCU, 0x31C)', value: this.sigFilter || '' });
     const list = el('div');
+    if (bus === 'IBUS1') body.append(this.linkCheck());
     body.append(el('p.desc', bus === 'ADAS'
       ? 'Live decoded ADASBUS messages (Fisker FM29 matrix), from the frames the comma streams. Tap a message to watch its signals.'
       : `Live decoded ${bus} messages (FM29 ${bus} matrix), as Pulse's CAN controller reads them from the car` +
@@ -596,6 +647,8 @@ export class Settings {
 
   async renderAbout() {
     const body = this.body;
+    // the app's version and its updates, as on the car controls' Software sheet (appupdate.js)
+    body.append(el('div.section', el('h3', 'Oceanfront View'), this.app.car.appUpdate.render(true)));
     const src = { car: this.app.state && this.app.state.comma ? "The car's IBUS1/IBUS2, with the comma's ADAS bus, radar and openpilot" : "The car's IBUS1/IBUS2",
       comma: 'The comma alone (no car buses here)', replay: 'A drive the comma is replaying', none: 'Nothing yet: the car is asleep, or this isn\'t the car\'s screen' }[this.app.source];
     body.append(el('div.section', el('h3', 'Driving data'), el('div.kv', el('span', 'Source'), el('span', src))));

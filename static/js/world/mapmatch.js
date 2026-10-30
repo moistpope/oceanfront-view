@@ -8,6 +8,8 @@
 // which road and roughly where along it, never which lane (the camera's lane model keeps that job).
 // Coordinates are the pose estimator's frame: x east, y north in meters, heading counter-clockwise from east.
 
+import { laneLayout } from './roaddetail.js';
+
 const DEG = Math.PI / 180;
 const SEARCH_M = 40;              // candidate segments this close to the car
 const SIGMA_D = 5.0;              // m: how far the car may be from a centerline (multi-lane one-way roads are wide)
@@ -274,13 +276,14 @@ export class MapMatcher {
     s += c.t * Math.hypot(c.bx - c.ax, c.by - c.ay);
     return {
       way: { id: w.id, name: w.name, ref: w.ref, cls: w.cls, className: w.className, lanes: w.lanes, oneWay: w.oneWay,
+             layout: laneLayout(w, c.dir),   // the lanes our way and the other, their width and arrows (roaddetail.js)
              maxSpeed: w.maxSpeed || null, maxSpeedForward: w.maxSpeedForward || null, maxSpeedBackward: w.maxSpeedBackward || null },
       dir: c.dir,
       s: r1(s), lateral: r1(c.lateral), distance: r1(c.d), headingDiff: Math.round(c.dh / DEG * 10) / 10,
       conf: Math.round(Math.exp(-Math.max(0, c.score) / 2) * 100) / 100,
       coasting: !!c.coasting,
       horizon: points, carIndex, horizonLength: r1(length), ended, branches,   // horizon: world frame [x east, y north]; points[carIndex] is the matched point
-      ways,   // the horizon's runs per way: [{from (point index), lanes, oneWay, className, name, ref}]
+      ways,   // the horizon's runs per way: [{from (point index), lanes, oneWay, className, name, ref, layout}]
       t: now,
     };
   }
@@ -322,8 +325,8 @@ export class MapMatcher {
     for (let k = back.length - 1; k >= 0; k--) pts.push(back[k]);
     const carIndex = pts.length;
     pts.push([c.px, c.py]);
-    const run = (w, from) => ways.push({ from, lanes: w.lanes, oneWay: w.oneWay, className: w.className, name: w.name, ref: w.ref });
-    run(c.way, 0);
+    const run = (w, from, d) => ways.push({ from, lanes: w.lanes, oneWay: w.oneWay, className: w.className, name: w.name, ref: w.ref, layout: laneLayout(w, d) });
+    run(c.way, 0, c.dir);
     // ahead: along the way, then onto the best continuation at each end
     let key = c.tileKey, wi = c.wi, xy = c.xy, way = c.way, dir = c.dir;
     let i = c.dir > 0 ? c.si + 1 : c.si;   // the node ahead of the matched point
@@ -379,7 +382,7 @@ export class MapMatcher {
           visited.add(turning.tileKey + ':' + turning.wi);
           hops++;
           key = turning.tileKey; wi = turning.wi; xy = turning.xy; way = turning.way; dir = turning.odir;
-          run(way, pts.length - 1);
+          run(way, pts.length - 1, dir);
           i = turning.nodeIndex + dir;
           continue outer;
         }
@@ -402,7 +405,7 @@ export class MapMatcher {
           if (next === null || ++hops > MAX_HOPS) { ended = true; break outer; }
           visited.add(next.tileKey + ':' + next.wi);
           key = next.tileKey; wi = next.wi; xy = next.xy; way = next.way; dir = next.odir;
-          run(way, pts.length - 1);
+          run(way, pts.length - 1, dir);
           i = next.nodeIndex + dir;
           continue outer;
         }
@@ -441,6 +444,6 @@ export class MapMatcher {
       len += seg; pts.push([r1(nx), r1(ny)]); px = nx; py = ny;
     }
     return { x: r1(x), y: r1(y), along: r1(along), angle: Math.round(o.ang / DEG), cls: o.way.cls, className: o.way.className,
-             name: o.way.name, ref: o.way.ref, oneWay: o.way.oneWay, lanes: o.way.lanes, pts, merge: !!o.arriving };
+             name: o.way.name, ref: o.way.ref, oneWay: o.way.oneWay, lanes: o.way.lanes, layout: laneLayout(o.way, o.odir), pts, merge: !!o.arriving };
   }
 }

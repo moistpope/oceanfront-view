@@ -145,6 +145,7 @@ export const CATEGORIES = [
     sections: [
       {
         kind: 'climate',
+        note: 'Every button here sends to the car, except Schedule. The temperatures are a demo (no message for them).',
         controls: [
           { id: 'climate.temps', type: 'temps' },
           T('climate.on', 'Climate', true, null, { icon: 'power', live: (cs) => { const f = cs.rawOf('ECC_WindSpdSts'); return f === undefined ? undefined : f > 0; },
@@ -376,7 +377,7 @@ export const CATEGORIES = [
         kind: 'tiles',
         controls: [
           ACT('California Mode', 'california', 'primary', 'Opens all eight: the windows, the rear window and the sunroof', { icon: 'window', off: OWNED }),   // ICC_0x336 ReqCalifModHMIBtn, E2E
-          ACT('Close all', 'closeAll', null, 'The four door windows and the sunroof', { icon: 'close' }),
+          ACT('Close all', 'closeAll', null, 'The four door windows and the sunroof', { icon: 'close', sends: true }),
           T('doors.mirrors', 'Fold mirrors', false, null, { icon: 'mirror', live: map('BCM_MirrCmd', { 1: true, 2: false }), tx: req(MSG.BODY, 'ICC_MirrCmd', { true: 1, false: 2 }) }),
           T('doors.winLock', 'Rear window lock', false, null, { icon: 'winlock', off: NO_MSG }),
           T('doors.child', 'Child locks', false, null, { icon: 'child', off: NO_MSG }),

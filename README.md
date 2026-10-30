@@ -31,10 +31,16 @@ and openpilot, and the app manages it over SSH.
 - **Live car controls:** locks, doors, windows, sunroof, mirrors, lights, climate, seats and energy,
   reflected on the 3D car. Controls send the head unit's own CAN messages; ones that can't are greyed out.
 - **Music and navigation:** now-playing and next-turn cards from the head unit, with a turn arrow on the road.
-- **Comma camera:** the comma's road (or wide) camera with the path, lane lines, road edges and lead it
-  draws on its own screen, from the bridge's `/video` socket (the video button beside the camera button turns it on and off). The video is
-  the comma's livestream H.264, decoded by the WebView (WebCodecs); the overlay is drawn on each frame from
-  the model output computed from that frame (`static/js/roadcam.js`).
+- **Comma camera:** the comma's camera in a window over the 3D view (drag it anywhere, resize it from its corner, tap
+  it for its controls), in one of three styles. **Road** and **Wide**: that camera's whole 16:9 picture with the
+  path, lane lines, road edges and lead drawn over it. **Mirror**: the comma 4's own driving screen, in its 536 x 240
+  shape -- the camera framed the way the comma frames it (and the camera it picks: wide in experimental mode at low
+  speed), with everything its screen draws: the path and lane lines in the status colours, the curved torque bar, the
+  steering wheel and turn intent, the set speed, alerts, the driver monitoring icon, blind spot icons and the
+  confidence ball, ported from sunnypilot's `selfdrive/ui/mici/onroad` (`static/js/commaui.js`, with the screen's
+  artwork and fonts in `static/comma/`). It comes from the bridge's `/video` socket (the video button beside the
+  camera button turns it on and off): the comma's livestream H.264, decoded by the WebView (WebCodecs), with the
+  overlay drawn on each frame from the model output computed from that frame (`static/js/roadcam.js`).
 - **Comma tab:** SSH management of the comma (start/stop openpilot, logs, processes, routes and replay,
   updates, branch and fork switching, panda firmware).
 - **Debug tools:** *Signals* tab (live CAN browser), object stats, radar tracks, frame-rate counter

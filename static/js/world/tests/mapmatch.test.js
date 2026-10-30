@@ -255,7 +255,7 @@ describe('roads layer through StateBuilder', async () => {
     assert.equal(net.strips.length, s3.map.roads.ways.length);
     assert.ok(net.edges.length > 2 * net.strips.length, 'edges are split into pieces at junctions');
     const main = s3.map.roads.ways.find(w => w.name === 'Main Street' && w.pts.some(p => p[0] === 0 && p[1] === 0));
-    const mainEdges = net.edges.filter(e => e.every(p => Math.abs(Math.abs(p[1]) - 3.6) < 0.01));
+    const mainEdges = net.edges.filter(e => e.every(p => Math.abs(Math.abs(p[1]) - 3.3) < 0.01));   // painted 0.3 m in from the strip's edge
     const gapAtCross = mainEdges.filter(e => e[e.length - 1][0] < 0).map(e => e[e.length - 1][0]).sort((a, b) => b - a)[0];
     assert.ok(main && gapAtCross != null && Math.abs(gapAtCross - (-(3.6 + 6))) < 1.0, `Main's edge stops a fillet before Cross Street: ${gapAtCross}`);
     // the same road going on into the next way opens nothing: Main Street's centerline runs through x = 1000 unbroken

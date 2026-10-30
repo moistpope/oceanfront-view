@@ -1,4 +1,4 @@
-import { cameraSignUnit, cameraSignValue } from './regional.js';
+import { cameraSignUnit, cameraSignValue, signStyle } from './regional.js';
 // DOM overlay: speed, gear, steering assist (MADS), ACC set speed + gap, speed limit, telltales, alerts.
 import { $, $$, el, icon, iconSvg, setClass, setText, prettyLabel, MS_TO_KPH, MS_TO_MPH } from './util.js';
 import { EnergyDetails } from './energy.js';
@@ -233,12 +233,12 @@ export class Hud {
   }
 
   _limit(op, f, unit, conv, v, settings) {
-    let value = null, style = unit === 'kmh' ? 'eu' : 'us';
+    let value = null, style = signStyle(settings, unit, f);
     const tsr = f && f.tsr;
     if (tsr && tsr.speedLimit) {
       value = cameraSignValue(settings, tsr, unit);
       const sourceUnit = cameraSignUnit(settings, tsr);
-      style = sourceUnit === 'kmh' ? 'eu' : 'us';
+      style = signStyle(settings, sourceUnit || unit, f);
     } else {
       const sl = op.longitudinalPlanSP && op.longitudinalPlanSP.speedLimit;
       const ms = sl && sl.valid && sl.value > 0 ? sl.value : (op.liveMapDataSP && op.liveMapDataSP.speedLimit);

@@ -4,6 +4,7 @@
 // matching the ADAS/openpilot convention (distances measured from the front bumper).
 import * as THREE from '../vendor/three.module.min.js';
 import { GLTFLoader } from '../vendor/GLTFLoader.js';
+import { mergeGeometries, deinterleaveAttribute } from '../vendor/BufferGeometryUtils.js';
 import { Lamp, LAMP } from './lamps.js';
 
 const geoCache = new Map();
@@ -281,6 +282,8 @@ const RIG = {
   },
 };
 
+const INTERIOR = /^(Seat_(FL|FR|Rear)$|Dash_Vents$|Center_Screen$|Driver_Display$|Console$|Sunshade$|Body__(Interior_|DoorCard|seatbelt|PBR_int$)|Door_.*__DoorCard)/;
+
 export function loadEgoModel(url) {
   return new Promise((resolve, reject) => {
     new GLTFLoader().load(url, (gltf) => {
@@ -297,6 +300,10 @@ export function loadEgoModel(url) {
       const mats = new Map(), meshes = new Map();   // by material name
       model.traverse((o) => {
         if (!o.isMesh) return;
+        // two-sided materials in one pass: the glass is thin panels, and three otherwise draws each transparent one
+        // twice a frame (back faces, then front) and checks its program each time; the roof's fade turns more of
+        // them transparent (cutaway.js), and its copies keep the flag
+        if (o.material.side === THREE.DoubleSide) o.material.forceSinglePass = true;
         mats.set(o.material.name, o.material);
         meshes.set(o.material.name, [...(meshes.get(o.material.name) || []), o]);
       });
@@ -325,9 +332,14 @@ export function loadEgoModel(url) {
       const shadow = softShadow(OCEAN.width, size.z);
       shadow.position.z = size.z / 2;
       g.add(shadow);
+      // what can't be seen from outside with the doors shut (the seats, dash and trim behind the dark glass, the
+      // doors' inner panels): the drive model (driveModel) leaves it out
+      const interior = [];
+      model.traverse((o) => { if (o !== model && INTERIOR.test(o.name)) interior.push(o); });
       const rear = wheels.filter(w => !w.front);
       Object.assign(g.userData, {
         model, mats, meshes,   // the glTF scene, and its materials and meshes by material name (cutaway.js)
+        interior,
         paint: [mats.get(RIG.paint)].filter(Boolean), wheelFace: mats.get(RIG.wheelFace), rims, lamps, wheels,
         length: size.z, width: OCEAN.width, height: size.y, gltf: true,
         rearAxleZ: rear.length ? rear.reduce((a, w) => a + w.pos.z, 0) / rear.length : size.z - OCEAN.axles[0],
@@ -487,4 +499,50 @@ export function fitScale(group, cls, w, l, h) {
   } else {
     group.scale.set(W / ud.width, H / ud.height, L / ud.length);
   }
+}
+
+// The car as it's seen while driving, for scene.js to draw instead of the model's ~150 parts: the body, doors and
+// tailgate as they rest (shut), one mesh per material (lamps keep theirs, so they still light), without the
+// interior (userData.interior). The wheels stay the model's own, as they turn and steer. The meshes share the
+// model's materials, so paint, lamps and theme changes reach both. Build it before cutaway.js swaps materials.
+// Returns {group, parts}: the group to show while driving, and the model's nodes it stands in for.
+export function driveModel(g) {
+  const model = g.userData.model;
+  model.updateMatrixWorld(true);
+  const toModel = new THREE.Matrix4().copy(model.matrixWorld).invert();
+  const hidden = new Set();
+  for (const o of g.userData.interior || []) o.traverse((x) => hidden.add(x));
+  // the vehicle's top nodes (Body, the doors, the tailgate), without the four Steer_ corners
+  const parts = (model.getObjectByName('Steer_Front_L')?.parent || model).children.filter(n => !n.name.startsWith('Steer_'));
+  const groups = new Map();   // material and attribute set -> {material, geos}
+  for (const part of parts) part.traverse((o) => {
+    if (!o.isMesh || hidden.has(o) || !shown(o, part) || Array.isArray(o.material)) return;
+    const geo = new THREE.BufferGeometry();
+    for (const [name, a] of Object.entries(o.geometry.attributes)) geo.setAttribute(name, a.isInterleavedBufferAttribute ? deinterleaveAttribute(a) : a.clone());
+    const n = geo.getAttribute('position').count;
+    geo.setIndex(o.geometry.index ? o.geometry.index.clone() : [...Array(n).keys()]);
+    geo.applyMatrix4(new THREE.Matrix4().multiplyMatrices(toModel, o.matrixWorld));
+    const key = o.material.uuid + ':' + Object.keys(geo.attributes).sort().join(',');
+    if (!groups.has(key)) groups.set(key, { material: o.material, geos: [], order: o.renderOrder });
+    groups.get(key).geos.push(geo);
+  });
+  const group = new THREE.Group();
+  group.name = 'drive';
+  group.matrixAutoUpdate = false;
+  group.matrix.copy(model.matrix);
+  for (const { material, geos, order } of groups.values()) {
+    const geo = geos.length > 1 ? mergeGeometries(geos) : geos[0];
+    if (!geo) continue;
+    const m = new THREE.Mesh(geo, material);
+    m.renderOrder = order;
+    group.add(m);
+  }
+  group.visible = false;
+  g.add(group);
+  return { group, parts };
+}
+
+function shown(o, root) {
+  for (let x = o; x && x !== root; x = x.parent) if (!x.visible) return false;
+  return true;
 }

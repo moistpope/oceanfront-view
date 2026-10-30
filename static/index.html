@@ -30,13 +30,17 @@
 <div id="app">
   <canvas id="scene"></canvas>
   <div id="olabels" aria-hidden="true"></div>
-  <!-- the comma's camera with its overlay (roadcam.js), over the 3D view while it's chosen -->
+  <!-- the comma's camera (roadcam.js): road or wide with the path and lanes, or the comma 4's screen mirrored
+       (commaui.js); a window over the 3D view, moved and resized by dragging; a tap shows the controls -->
   <div id="roadcam" class="roadcam hidden">
     <canvas id="roadcam-canvas"></canvas>
     <div id="roadcam-status" class="roadcam-status hidden" aria-live="polite"></div>
+    <button id="roadcam-close" class="roadcam-close" aria-label="Close the camera"></button>
+    <div class="roadcam-resize" title="Drag to resize" aria-hidden="true"></div>
     <div class="roadcam-cams" role="radiogroup" aria-label="Camera">
-      <button data-roadcam="road" class="on" role="radio">Road</button>
-      <button data-roadcam="wide" role="radio">Wide</button>
+      <button data-roadcam="road" role="radio" title="The road camera with the path and lanes">Road</button>
+      <button data-roadcam="wide" role="radio" title="The wide camera with the path and lanes">Wide</button>
+      <button data-roadcam="mirror" class="on" role="radio" title="The comma 4's own screen">Mirror</button>
     </div>
   </div>
 

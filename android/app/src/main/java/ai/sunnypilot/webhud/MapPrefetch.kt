@@ -105,6 +105,10 @@ class MapPrefetch(private val tiles: MapTiles, private val features: MapFeatures
                         if (!features.ensureTile(t.first, t.second)) synchronized(lock) { errors++ }
                         Thread.sleep(PAUSE_MS)
                     }
+                    if (!features.haveWays(t.first, t.second)) {
+                        if (!features.ensureWays(t.first, t.second)) synchronized(lock) { errors++ }
+                        Thread.sleep(PAUSE_MS)
+                    }
                 }
             } finally {
                 synchronized(lock) { busy = false; updated = System.currentTimeMillis() / 1000 }
