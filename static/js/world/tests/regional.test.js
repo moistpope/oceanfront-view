@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { leftTraffic, cameraSignUnit, cameraSignValue } from '../../regional.js';
+import { leftTraffic, cameraSignUnit, cameraSignValue, signStyle } from '../../regional.js';
 import { laneCenters, mapReference, freshPlacement } from '../../mapsurface.js';
 
 test('traffic override takes priority; auto follows car, unknown retains right traffic', () => {
@@ -47,4 +47,13 @@ test('30 and 70 UK camera signs retain their numbers in mph; convert once to met
     assert.equal(cameraSignValue({ cameraSignUnits: 'mph' }, tsr, 'kmh'), Math.round(speedLimit * 1.609344));
   }
   assert.equal(cameraSignValue({}, { speedLimit: 30, unit: 'kmh' }, 'mph'), 19);
+});
+
+test('UK mph signs stay round; the US sign is for mph on the right, or when chosen', () => {
+  assert.equal(signStyle({ trafficSide: 'left' }, 'mph'), 'eu');
+  assert.equal(signStyle({}, 'mph', { road: { trafficSide: 'Left_Hand_Traffic' } }), 'eu');
+  assert.equal(signStyle({ trafficSide: 'right' }, 'mph'), 'us');
+  assert.equal(signStyle({}, 'kmh'), 'eu');
+  assert.equal(signStyle({ signStyle: 'round', trafficSide: 'right' }, 'mph'), 'eu');
+  assert.equal(signStyle({ signStyle: 'us', trafficSide: 'left' }, 'kmh'), 'us');
 });

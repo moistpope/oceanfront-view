@@ -30,6 +30,7 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
     @Volatile private var sshError: String? = null
     @Volatile private var sshCheckedAt = 0L
     @Volatile private var sshHost: String? = null
+    private val sshChecking = java.util.concurrent.atomic.AtomicBoolean()
 
     /** A secret the page sends with each request; it gets it from the app's JavaScript interface. */
     val token: String = ByteArray(24).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
@@ -52,6 +53,7 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
                 sub == "/hostkey" && method == "DELETE" -> { ssh.forgetHostKey(); status(check = true) }
                 sub == "/search" && method == "POST" -> { link().searchAgain(); JSONObject().put("ok", true) }
                 sub == "/info" && method == "GET" -> JSONObject(script("info.py", "python3 - <<'PY'\n${asset("info.py")}\nPY", 25_000))
+                sub == "/preview" && method == "GET" -> JSONObject(script("preview.py", "python3 - <<'PY'\n${asset("preview.py")}\nPY", 150_000))
                 sub == "/routes" && method == "GET" -> JSONObject(script("routes.py", "python3 - <<'PY'\n${asset("routes.py")}\nPY", 25_000))
                 sub == "/log" && method == "GET" -> log(query["lines"]?.toIntOrNull() ?: 400)
                 sub == "/branches" && method == "GET" -> branches(query["url"])
@@ -82,7 +84,12 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
         val out = JSONObject()
         out.put("device", d?.let { JSONObject().put("host", it.host).put("port", it.port).put("hostname", it.hostname).put("version", it.version) } ?: JSONObject.NULL)
         out.put("key", if (key.exists) JSONObject().put("publicKey", key.openSsh()).put("fingerprint", key.fingerprint()).put("created", key.created) else JSONObject.NULL)
-        if (check && d != null && key.exists && (System.currentTimeMillis() - sshCheckedAt > SSH_CHECK_MS || sshHost != d.host || sshOk != true)) checkSsh(d)
+        // the SSH check can take seconds (or hang on a comma that's still starting): it runs on its own, and the page,
+        // which asks every few seconds, sees its result next time rather than waiting for it with nothing on screen
+        if (check && d != null && key.exists && (System.currentTimeMillis() - sshCheckedAt > SSH_CHECK_MS || sshHost != d.host || sshOk != true) &&
+            sshChecking.compareAndSet(false, true)) {
+            pool.execute { try { checkSsh(d) } finally { sshChecking.set(false) } }
+        }
         out.put("ssh", JSONObject().put("ok", if (d != null && key.exists && sshHost == d.host) sshOk ?: JSONObject.NULL else JSONObject.NULL)
             .put("error", sshError ?: JSONObject.NULL).put("user", CommaSsh.USER).put("hostKey", ssh.pinnedFingerprint ?: JSONObject.NULL))
         return out
@@ -117,7 +124,8 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
         ssh.close()
         sshCheckedAt = 0
         Thread.sleep(500)   // sshd reads the keys on each login
-        return status(check = true)
+        checkSsh(d)         // here and now: the page shows whether it worked
+        return status(check = false)
     }
 
     /** Takes the key off the comma (if it is there to ask) and deletes it here. */
@@ -169,6 +177,8 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
         @Volatile var base = 0L                 // offset of out[0] in the whole output (the start is dropped past MAX_JOB_OUTPUT)
         @Volatile var done = false
         @Volatile var code: Int? = null
+        @Volatile var timedOut = false          // ran past its time: stopped waiting
+        @Volatile var lost = false              // the connection closed before the comma said how it ended
         val startedAt = System.currentTimeMillis()
 
         @Synchronized fun append(s: String) {
@@ -186,7 +196,7 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
         }
 
         fun summary(): JSONObject = JSONObject().put("id", id).put("action", action).put("title", title).put("done", done)
-            .put("code", code ?: JSONObject.NULL).put("startedAt", startedAt)
+            .put("code", code ?: JSONObject.NULL).put("startedAt", startedAt).put("timedOut", timedOut).put("lost", lost)
     }
 
     private fun job(id: Int?, from: Long): JSONObject {
@@ -226,8 +236,20 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
         pool.execute {
             try {
                 val r = ssh.run(d.host, "$prelude\n$assignments\n${asset("actions.sh")}\n", spec.timeoutMs, onOutput = j::append)
-                j.code = r.code
-                if (r.code == -1) j.append("\n[the job took longer than ${spec.timeoutMs / 60_000} min: stopped waiting]\n")
+                when {
+                    r.timedOut -> {
+                        j.timedOut = true
+                        j.code = -1
+                        j.append("\n[the job took longer than ${spec.timeoutMs / 60_000} min: stopped waiting]\n")
+                    }
+                    r.code == -1 -> {
+                        // the job may well have finished (openpilot restarting can take the connection down): look
+                        j.lost = true
+                        j.append("\n[the connection closed before the comma said how the job ended: checking]\n")
+                        j.code = verify(d, action, assignments, j)
+                    }
+                    else -> j.code = r.code
+                }
             } catch (e: Exception) {
                 // a reboot (or a stop that took the link down) ends the session: that's the job done
                 j.append("\n[${e.message ?: e.javaClass.simpleName}]\n")
@@ -238,6 +260,33 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
             }
         }
         return j.summary()
+    }
+
+    /** After a job whose connection closed: what the checkout is now, on a fresh session, and whether that is what
+     *  the job was to do (a branch switch or pull that reached its commit is done: 0, one that didn't: 1); -1 when
+     *  the job leaves nothing to check or the comma can't be reached. */
+    private fun verify(d: Device, action: String, assignments: String, j: Job): Int {
+        ssh.close()
+        val check = when (action) {
+            "branch" -> "[ \"\$(git rev-parse --abbrev-ref HEAD)\" = \"\$BRANCH\" ] && [ \"\$(git rev-parse HEAD)\" = \"\$(git rev-parse \"origin/\$BRANCH\")\" ] && exit 0; exit 1"
+            "pull" -> "[ \"\$(git rev-parse HEAD)\" = \"\$(git rev-parse '@{u}')\" ] && exit 0; exit 1"
+            else -> "exit 3"
+        }
+        val script = "$prelude\n$assignments\n" +
+            "git log -1 --format=\"now on \$(git rev-parse --abbrev-ref HEAD) at %h %s (%cr)\"\n" +
+            "op_running && echo 'openpilot is running' || echo 'openpilot is not running'\n$check\n"
+        val r = try {
+            ssh.run(d.host, script, 20_000)
+        } catch (e: Exception) {
+            j.append("[couldn't reach the comma to check: ${e.message ?: e.javaClass.simpleName}]\n")
+            return -1
+        }
+        j.append(r.output.trimEnd() + "\n")
+        return when (r.code) {
+            0 -> { j.append("[the change is in place]\n"); 0 }
+            1 -> { j.append("[the checkout isn't where the job was taking it]\n"); 1 }
+            else -> -1
+        }
     }
 
     /** Disruptive jobs wait for the car to stop: the bridge knows from openpilot, the page from the car's bus. */
@@ -258,9 +307,9 @@ class CommaManager(private val context: Context, private val link: () -> Link) {
         private val BRANCH = Regex("^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
         private val REPO_URL = Regex("^(https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/-]+|git@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-]+)$")
         private val ACTIONS = mapOf(
-            "start" to Action("Start openpilot", true),
-            "stop" to Action("Stop openpilot", true),
-            "restart" to Action("Restart openpilot", true),
+            "start" to Action("Start the driving software", true),
+            "stop" to Action("Stop the driving software", true),
+            "restart" to Action("Restart the driving software", true),
             "reboot" to Action("Reboot the comma", true, 30_000),
             "update_check" to Action("Check for an update", false, 30_000),
             "update_download" to Action("Download the update", false, 30_000),

@@ -1,11 +1,11 @@
-import { leftTraffic } from './regional.js';
+import { leftTraffic, signStyle } from './regional.js';
 // three.js car view. World objects (vehicles, people) are 3D; road markings are flat ribbons.
 //
 // Vehicle frame (server data): x forward, y left, meters, origin = ego front bumper.
 // Scene frame (three.js):      X right, Y up, Z backward. So X = -y, Z = -x.
 import * as THREE from '../vendor/three.module.min.js';
 import { OrbitControls } from '../vendor/OrbitControls.js';
-import { makeEgo, makeObject, makeGhost, fitScale, loadEgoModel, paintEgo, fitWheels } from './models.js';
+import { makeEgo, makeObject, makeGhost, fitScale, loadEgoModel, paintEgo, fitWheels, driveModel } from './models.js';
 import { applyLamps } from './lamps.js';
 import { RoadModel, linePoints, modelXOffset } from './road.js';
 import { RoadFurniture } from './furniture.js';
@@ -49,6 +49,7 @@ const EGO_ENV = { light: .75, dark: 0.55 };   // reflection strength on the ego 
 const UP = new THREE.Vector3(0, 1, 0);
 const STUDIO_FILL = 0.8;              // car controls: a framed part fills this much of the free screen area
 const STUDIO_MIN_DIST = 1.0;          // ...and the camera may come this close
+const INTERIOR_CAM_M = 5.5;           // m from the car's middle: closer than this the interior shows through the glass
 
 // headlight throw: narrow and bright at the bumper (bottom), widening and fading down the road (top)
 let beamTexture = null;
@@ -356,6 +357,7 @@ export class CarScene {
       this.scene.remove(this.ego);
       this.ego = g;
       this._lightEgo(g);
+      g.userData.drive = driveModel(g);
       this.scene.add(g);
       this.setEgoLook(this.egoLook.paint, this.egoLook.wheels);
       this.cutaway.attach(g);
@@ -532,6 +534,20 @@ export class CarScene {
       Object.assign(this.viewOffset, off);
       this.resize();
     }
+  }
+
+  // The ego car drawn as its drive model (models.js driveModel: about a quarter of the draws, no interior) unless
+  // something needs the real one: the car controls open or anything of theirs showing (a door, the roof, a
+  // cutaway), or the camera pulled in close enough to see inside.
+  _driveModel() {
+    const d = this.ego && this.ego.userData.drive;
+    if (!d) return;
+    const ud = this.ego.userData, mid = (this._mid || (this._mid = new THREE.Vector3())).set(0, ud.height / 2, ud.length / 2);
+    const full = !!this.studio || this.cutaway.awake || this.camera.position.distanceTo(this.ego.localToWorld(mid)) < INTERIOR_CAM_M;
+    if (full === this._fullModel) return;
+    this._fullModel = full;
+    d.group.visible = !full;
+    for (const o of d.parts) o.visible = full;
   }
 
   // ---- car controls (studio) --------------------------------------------------------------------
@@ -1419,7 +1435,9 @@ export class CarScene {
     // the car has strayed from for a moment
     const showMap = s.mapRoad !== false;
     this._alignMap(this.mapRef, zr);
-    this.roadnet.update(map, showMap);
+    // the US's double yellow center line where its speed signs would be, else (the UK, Europe) a white one
+    const f0 = this.state?.fisker, unit0 = s.units === 'mph' || s.units === 'kmh' ? s.units : f0?.vehicle?.displayUnit;
+    this.roadnet.update(map, showMap, leftTraffic(s, f0), signStyle(s, unit0, f0) === 'us');
     const f = this.state && this.state.fisker;
     this.ourSignal = this.mapFeatures.update(map, showMap && s.showSigns !== false, f ? f.tlr : null, this.pose, this.clock);
   }
@@ -1452,6 +1470,7 @@ export class CarScene {
     this._ego(dt);
     this._tracks(dt);
     this.cutaway.update(dt, this.clock);
+    this._driveModel();
     this.navArrow.update(toScene, this.clock);
     this.renderer.render(this.scene, this.camera);
     this._labels();   // after render: the camera's matrices are this frame's

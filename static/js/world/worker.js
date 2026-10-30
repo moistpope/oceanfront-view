@@ -58,6 +58,23 @@ async function fetchFeatures(klat, klon) {
   if (!r.ok) return null;
   return r.json();
 }
+/** GET /map/ways/<tlat>/<tlon>: a road tile's full OSM way tags (roaddetail.js: lanes each way, width, turn arrows), or
+ *  null. Shared by both builders; after a miss (a server without the endpoint, or Overpass busy) nothing is asked for a minute. */
+const wayTags = new Map();   // "tlat,tlon" -> Promise
+let waysMissingAt = -1e9;
+async function fetchWays(tlat, tlon) {
+  const key = tlat + ',' + tlon;
+  if (wayTags.has(key)) return wayTags.get(key);
+  if (performance.now() - waysMissingAt < 60e3) return null;
+  const p = fetch(`/map/ways/${tlat}/${tlon}`).then((r) => {
+    if (!r.ok) { waysMissingAt = performance.now(); return null; }
+    return r.json();
+  });
+  wayTags.set(key, p);
+  p.then((v) => { if (!v) wayTags.delete(key); }, () => wayTags.delete(key));
+  if (wayTags.size > 12) wayTags.delete(wayTags.keys().next().value);
+  return p;
+}
 /** POST /map/prefetch: have the server download the map within km of the point (maptiles.py MapPrefetch). */
 async function fetchPrefetch(lat, lon, km) {
   await fetch('/map/prefetch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat, lon, radius_km: km }) });
@@ -76,13 +93,13 @@ self.onmessage = (ev) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      builder = new StateBuilder(new DBC(msg.worldDbc), msg.radarDbc ? new DBC(msg.radarDbc) : null, { mapData: new MapData(fetchTile, fetchFeatures, fetchPrefetch) });
+      builder = new StateBuilder(new DBC(msg.worldDbc), msg.radarDbc ? new DBC(msg.radarDbc) : null, { mapData: new MapData(fetchTile, fetchFeatures, fetchPrefetch, fetchWays) });
       builder.map.setPrefetchKm(prefetchKm);
       builder.setCalibration(calibrationOn);
       builder.setPositionSource(positionSource);
       if (msg.ibusDbc) {
         local = new StateBuilder(new DBC(msg.ibusDbc), msg.radarDbc ? new DBC(msg.radarDbc) : null,
-          { gearMsg: 0x234, staleS: LOCAL_STALE_S, mapData: new MapData(fetchTile, fetchFeatures, fetchPrefetch) });
+          { gearMsg: 0x234, staleS: LOCAL_STALE_S, mapData: new MapData(fetchTile, fetchFeatures, fetchPrefetch, fetchWays) });
         local.map.setPrefetchKm(prefetchKm);
         local.setCalibration(calibrationOn);
         local.setPositionSource(positionSource);

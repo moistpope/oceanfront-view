@@ -46,6 +46,19 @@ object CanBridge {
     private val tx = Handler(txThread.looper)
     private var txWindowStart = 0L
     private var txInWindow = 0
+    private val txLog = ArrayDeque<String>()   // the last sends and the helper's answers, for the page's link check
+    private val txCounts = HashMap<String, Int>()   // "ok" / "error ..." -> how many, since start
+
+    private fun note(line: String) = synchronized(txLog) {
+        txLog.addLast("%tT %s".format(System.currentTimeMillis(), line))
+        while (txLog.size > TX_LOG) txLog.removeFirst()
+    }
+
+    /** What's been sent and what the helper answered: the counts, then the last [TX_LOG] lines, newest last. */
+    fun txReport(): String = synchronized(txLog) {
+        val counts = txCounts.entries.joinToString(", ") { "${it.value}× ${it.key}" }.ifEmpty { "nothing sent yet" }
+        (listOf("helper: " + (if (stdin != null) "running" else "not running"), "answers: $counts") + txLog).joinToString("\n")
+    }
 
     fun addListener(l: Listener) = listeners.add(l)
     fun removeListener(l: Listener) = listeners.remove(l)
@@ -114,6 +127,7 @@ object CanBridge {
         val hex = data.joinToString("") { "%02x".format(it) }
         val line = "tx $iface %03X $hex\n".format(addr)
         Log.i(TAG, "CAN send $bus 0x%03X $hex x$n".format(addr))
+        note("send $bus 0x%03X $hex x$n".format(addr))
         for (i in 0 until n) {
             tx.postDelayed({
                 val w = stdin
@@ -166,6 +180,11 @@ object CanBridge {
             if (line.startsWith("#")) {
                 val text = line.drop(1).trim()
                 if (text.startsWith("tx ") && text.endsWith(" ok")) Log.d(TAG, "CAN helper: $text") else Log.i(TAG, "CAN helper: $text")
+                if (text.startsWith("tx ")) {
+                    val status = text.split(' ', limit = 4).getOrElse(3) { "?" }
+                    synchronized(txLog) { txCounts[status] = (txCounts[status] ?: 0) + 1 }
+                    note("helper: $text")
+                }
                 continue
             }
             val parts = line.split(' ')
@@ -197,4 +216,5 @@ object CanBridge {
 
     private const val TAG = "WebHud"
     private const val TX_PER_SECOND = 60
+    private const val TX_LOG = 40
 }

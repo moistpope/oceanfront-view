@@ -14,6 +14,7 @@
 // fills from the Overpass API once and keeps. They are kept here in the same frame; a feature sits on a
 // road where its coordinate is a node of the road's way (the same OSM node), which state.js matches up.
 import { decodeTile, tileFor } from './osmtile.js';
+import { wayDetail } from './roaddetail.js';
 
 const DEG = Math.PI / 180;
 const EARTH_R = 6378137.0;
@@ -33,9 +34,13 @@ const PREFETCH_EVERY_S = 120, PREFETCH_MOVE_M = 3000;
 export class MapData {
   /** fetchTile(cell, file) resolves to the tile's bytes (Uint8Array) or null when it isn't available;
    *  fetchFeatures(klat, klon) to a feature cell ({nodes: [[id, lat, lon, tags], ...]}) or null, or is omitted;
-   *  prefetch(lat, lon, km) asks the server to download the map within km of the point, or is omitted. */
-  constructor(fetchTile, fetchFeatures = null, prefetch = null) {
+   *  prefetch(lat, lon, km) asks the server to download the map within km of the point, or is omitted;
+   *  fetchWays(tlat, tlon) to a road tile's full OSM way tags ({ways: {<id>: {tag: value}}}, roaddetail.js) or null,
+   *  or is omitted. */
+  constructor(fetchTile, fetchFeatures = null, prefetch = null, fetchWays = null) {
     this.fetchTile = fetchTile;
+    this.fetchWays = fetchWays;
+    this.wayTags = new Map();    // "tlat,tlon" (tile index, 0.25 deg) -> {ways: {id: tags} | null, loading, failedAt}
     this.fetchFeatures = fetchFeatures;
     this.prefetch = prefetch;
     this.prefetchKm = 25;
@@ -117,12 +122,14 @@ export class MapData {
     let e = this.tiles.get(key);
     if (e && (e.tile || e.loading || (e.failedAt != null && now - e.failedAt < RETRY_S))) { e.at = now; return; }
     if (!e) { e = { key, cell: t.cell, file: t.file, tile: null, ways: null, at: now, loading: false, failedAt: null }; this.tiles.set(key, e); }
+    this._wantWays(key, now);
     e.loading = true;
     const p = Promise.resolve().then(() => this.fetchTile(t.cell, t.file)).then((bytes) => {
       e.loading = false;
       if (!bytes) { e.failedAt = now; return; }
       e.tile = decodeTile(bytes);
       e.failedAt = null;
+      this._detail(e);
       if (this.origin) { this._project(e); this._reindex(); }
       this._evict();
     }, (err) => { e.loading = false; e.failedAt = now; e.error = String(err && err.message || err); });
@@ -134,7 +141,59 @@ export class MapData {
   addTile(key, tile, now = 0) {
     const e = { key, tile, ways: null, at: now, loading: false, failedAt: null };
     this.tiles.set(key, e);
+    this._detail(e);
     if (this.origin) { this._project(e); this._reindex(); }
+  }
+
+  // ---- full way detail (roaddetail.js) ----------------------------------------------------------
+
+  /** The tile index ("tlat,tlon", units of 0.25 deg) of a tile key ("<cell>/<lat>_<lon>_..."). */
+  static tileIndex(key) {
+    const [la, lo] = key.split('/').pop().split('_').map(Number);
+    return Math.round(la * 4) + ',' + Math.round(lo * 4);
+  }
+
+  _wantWays(key, now) {
+    if (!this.fetchWays) return;
+    const k = MapData.tileIndex(key);
+    let c = this.wayTags.get(k);
+    if (c && (c.ways || c.loading || (c.failedAt != null && now - c.failedAt < RETRY_S))) return;
+    if (!c) { c = { ways: null, loading: false, failedAt: null }; this.wayTags.set(k, c); }
+    c.loading = true;
+    const [tlat, tlon] = k.split(',').map(Number);
+    const p = Promise.resolve().then(() => this.fetchWays(tlat, tlon)).then((r) => {
+      c.loading = false;
+      if (!r || !r.ways) { c.failedAt = now; return; }
+      c.ways = r.ways;
+      c.failedAt = null;
+      this._detailAll(k);
+    }, (err) => { c.loading = false; c.failedAt = now; c.error = String(err && err.message || err); });
+    this.pending.set('ways:' + k, p);
+    p.finally(() => this.pending.delete('ways:' + k));
+  }
+
+  /** Put a tile's way tags in directly (tests and tools): ways as {<id>: {tag: value}}. */
+  addWayTags(tlat, tlon, ways) {
+    const k = tlat + ',' + tlon;
+    this.wayTags.set(k, { ways, loading: false, failedAt: null });
+    this._detailAll(k);
+  }
+
+  _detailAll(k) {
+    let any = false;
+    for (const e of this.tiles.values()) if (e.tile && MapData.tileIndex(e.key) === k) any = this._detail(e) || any;
+    if (any) this.version++;   // the matcher's description and the roads layer pick it up
+  }
+
+  /** Hang the parsed detail on each of the tile's ways (way.detail); true when the tile had any. */
+  _detail(e) {
+    const c = this.wayTags.get(MapData.tileIndex(e.key));
+    if (!c || !c.ways || !e.tile) return false;
+    for (const way of e.tile.ways) {
+      const tags = c.ways[way.id];
+      way.detail = tags ? wayDetail(tags, !!way.oneWay) : null;
+    }
+    return true;
   }
 
   // ---- features ---------------------------------------------------------------------------------
@@ -207,6 +266,7 @@ export class MapData {
       for (const e of this.tiles.values()) if (!e.loading && (oldest === null || e.at < oldest.at)) oldest = e;
       if (oldest === null) return;
       this.tiles.delete(oldest.key);
+      this.wayTags.delete(MapData.tileIndex(oldest.key));   // one tile per index: its tags go with it
       this._reindex();
     }
   }

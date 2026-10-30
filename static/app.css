@@ -231,7 +231,7 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bord
 .sheet header { display: flex; align-items: center; gap: 8px; padding: 10px 10px 0 14px; border-bottom: 1px solid var(--line); }
 .sheet nav { display: flex; gap: 2px; overflow-x: auto; flex: 1; scrollbar-width: none; }
 .sheet nav::-webkit-scrollbar { display: none; }
-.sheet nav button { border: 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; padding: 12px 12px 13px; border-bottom: 3px solid transparent; white-space: nowrap; }
+.sheet nav button { border: 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; padding: 12px 10px 13px; flex-shrink: 0; border-bottom: 3px solid transparent; white-space: nowrap; }
 .sheet nav button.on { color: var(--text); border-bottom-color: var(--accent); }
 .sheet .close { height: 44px; border: 0; background: transparent; border-radius: 10px; }
 .tab-body { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 16px 18px 40px; -webkit-overflow-scrolling: touch; user-select: text; -webkit-user-select: text; }
@@ -553,3 +553,8 @@ aside.carpanel.hvac .fo-sheet__body > * + * { margin-top: 0; }
 .procs td.st { white-space: nowrap; }
 .procs .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 .procs .dot.run { background: var(--green); } .procs .dot.bad { background: var(--red); } .procs .dot.off { background: var(--line); }
+
+/* the Signals tab's link check (settings.js linkCheck) */
+pre.diag { margin: 8px 0 0; max-height: 46vh; overflow: auto; padding: 10px 12px; border-radius: 12px; background: #0d0f12; color: #d6dae0;
+  font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+pre.diag:empty { display: none; }

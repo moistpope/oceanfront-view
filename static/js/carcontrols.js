@@ -23,6 +23,20 @@ const OVERVIEW = { at: [0, 0.6, 2.4], az: 180, el: 90, fit: [2.3, 5.1] };   // t
 const OVERVIEW_WIDE = { at: [0, 0.6, 2.4], az: 90, el: 90, fit: [5.1, 2.3] };   // ...or right, on a short screen
 const SHORT_PX = 420;     // free height below which the overview turns the car on its side
 const MOCK_OFF = 'Mockup: nothing on the car for this';   // carcatalog.js MOCK: off in the browser too
+
+// What a control does on the car, for the tag beside it: sends (setting it sends the head unit's message), reads
+// (shows what the car reports, can't change it), comma (an ACC setting the comma sends the ADAS module),
+// unavailable (greyed: no message, or the head unit's own undoes ours), demo (only the mockup moves). Demo
+// controls show only with Settings > Debug > Demo car controls.
+export function kindOf(c) {
+  if (!c) return 'demo';
+  if (c.acc) return 'comma';
+  if (c.tx || c.moves || c.winSig || c.kind === 'liftctl' || c.sunroof || c.sends) return 'sends';
+  if (c.live) return 'reads';
+  if (c.off && c.off !== MOCK_OFF) return 'unavailable';
+  return 'demo';
+}
+const KIND_TAG = { sends: 'Sends', reads: 'Reads only', comma: 'Via comma', unavailable: 'Not available', demo: 'Demo' };
 const LIVE_SYNC_S = 0.2;   // how often the controls take the car's values
 const ACC_POLL_MS = 3000;  // how often Assist re-reads the comma's ACC settings while it's open
 const SEAT_HEAT = 0xff6a2a;
@@ -93,6 +107,7 @@ export class CarControls {
   enter() {
     if (this.isOpen) return;
     this.isOpen = true;
+    if (this._ribbonDemo !== this.showDemo) this.buildRibbon();
     document.documentElement.classList.add('carmode');
     this.ribbon.setAttribute('aria-hidden', 'false');
     this.scene.enterStudio();
@@ -219,7 +234,9 @@ export class CarControls {
   buildRibbon() {
     const items = el('div.fo-dock__items');
     let sep = false;
+    this._ribbonDemo = this.showDemo;
     for (const c of CATEGORIES) {
+      if (!this.real(c)) continue;
       if (c.system && !sep) { items.append(el('i.fo-dock__sep')); sep = true; }
       const b = el('button.fo-dock__item', { dataset: { cat: c.id }, title: c.label, onclick: () => this.select(this.cat === c.id ? null : c.id) });
       b.append(icon(c.icon), el('span', c.short || c.label));
@@ -278,8 +295,23 @@ export class CarControls {
   }
 
   // A group of the sheet: a heading, then its controls laid out by its kind (carcatalog.js).
+  // whether a control is drawn: everything but the demo ones, unless they're asked for
+  get showDemo() { return this.app.settings.carDemo === true; }
+  shows(c) { return this.showDemo || kindOf(c.ref ? this.defs.get(c.ref) : c) !== 'demo'; }
+  /** Whether a category has anything but demo controls (else the ribbon leaves it out). */
+  real(cat) {
+    if (this.showDemo || !cat.sections && !cat.cards) return true;
+    if ((cat.chips || []).some(c => this.shows(c))) return true;
+    for (const sec of [...(cat.sections || []), ...(cat.cards || [])]) {
+      if (sec.kind === 'app' || sec.kind === 'status') return true;
+      if (sec.kind !== 'hidden' && (sec.controls || []).some(c => c.type !== 'note' && c.type !== 'info' && c.type !== 'hero' && this.shows(c))) return true;
+    }
+    return false;
+  }
+
   section(sec) {
     if (sec.kind === 'hidden') return null;
+    if (sec.controls && sec.kind !== 'climate' && sec.kind !== 'status' && sec.kind !== 'app' && !sec.controls.some(c => this.shows(c))) return null;
     const s = el('div.fo-group');
     if (sec.title) s.append(el('h3', sec.icon ? icon(sec.icon) : null, sec.title, sec.note ? el('small', sec.note) : null));
     else if (sec.note) s.append(el('p.fo-note', sec.note));
@@ -288,13 +320,15 @@ export class CarControls {
     if (sec.kind === 'app') { s.append(this.appUpdate.render()); return s; }
     if (sec.kind === 'tiles') {
       const g = el('div.fo-tiles');
-      for (const ctl of sec.controls) { const n = this.control(ctl, 'tile'); if (n) g.append(n); }
+      for (const ctl of sec.controls) { if (!this.shows(ctl)) continue; const n = this.control(ctl, 'tile'); if (n) g.append(n); }
+      if (!g.childElementCount) return null;
       s.append(g);
       return s;
     }
     // rows run together between hairlines; blocks (buttons, the lock) sit between them
     let rows = el('div.fo-rows');
     for (const ctl of sec.controls || []) {
+      if (!this.shows(ctl)) continue;
       const node = this.control(ctl, 'row');
       if (!node) continue;
       if (node.classList.contains('fo-row')) { rows.append(node); continue; }
@@ -771,6 +805,7 @@ export class CarControls {
   // greyed, and says why when tapped.
   control(c, as) {
     const node = as === 'tile' ? this.tile(c) : this._control(c);
+    if (node) this.tag(node, c);
     if (node && c.acc) this.accOff(node);
     if (node && c.off && (this.inApp || c.off === MOCK_OFF)) {
       node.classList.add('off');
@@ -783,6 +818,14 @@ export class CarControls {
       if (node.tagName === 'BUTTON') node.disabled = true;
     }
     return node;
+  }
+
+  // the tag saying what a control does on the car (kindOf), after its label
+  tag(node, c) {
+    const kind = kindOf(c.ref ? this.defs.get(c.ref) : c);
+    node.dataset.kind = kind;
+    const at = node.classList.contains('fo-tile') ? node : node.querySelector('.fo-row__lbl b');
+    if (at) at.append(el('span.fo-tag.' + kind, KIND_TAG[kind]));
   }
 
   // an ACC setting greyed, with why, while the comma can't take it (not there, the car moving, an old comma)
@@ -991,7 +1034,7 @@ export class CarControls {
       at(toggle('climate.wheel'), '1'), at(toggle('climate.defrostF'), '2'), at(toggle('climate.defrostR'), '3'),
       at(this.fan(by['climate.fan']), '5 / 9'),
       at(this.offMark(this.iconToggle(by['climate.recirc'], 0, 1), by['climate.recirc']), '11'), at(toggle('climate.purify'), '12'));
-    return [row1, row2, this.temps()];
+    return this.showDemo ? [row1, row2, this.temps()] : [row1, row2];   // the temperatures are a mockup (no message for them)
   }
 
   // a control the car can't take: greyed, and it says why on tap (set() shows the toast)
