@@ -285,7 +285,7 @@ export class StateBuilder {
    *  true when rebuilt this call. */
   _roadsLayer(x, y) {
     const r = this._roads;
-    const mapVersion = this.map.version + ':' + this.map.featVersion;
+    const mapVersion = this.map.version + ':' + this.map.featVersion + ':' + (this.map.surfVersion || 0);
     if (r && r.mapVersion === mapVersion && Math.hypot(x - r.cx, y - r.cy) < ROADS_STEP) return false;
     const R = ROADS_R, x0 = x - R, x1 = x + R, y0 = y - R, y1 = y + R;
     const ways = [];
@@ -319,7 +319,10 @@ export class StateBuilder {
     mergeCopies(ways);
     const features = this._features(x, y, R, near);
     const version = ++this._roadsSeq;
-    this._roads = { version, cx: x, cy: y, mapVersion, layer: { version, cx: Math.round(x), cy: Math.round(y), r: R, ways, features } };
+    // Ordnance Survey's surveyed road surfaces around (osroads.js): [{kind, rings: [[[x, y], ...], ...]}]
+    const surfaces = this.map.surfacesNear ? this.map.surfacesNear(x, y, R).map(p => ({ kind: p.kind,
+      rings: p.xy.map(xy => { const ring = []; for (let i = 0; i < xy.length; i += 2) ring.push([r1(xy[i]), r1(xy[i + 1])]); return ring; }) })) : [];
+    this._roads = { version, cx: x, cy: y, mapVersion, layer: { version, cx: Math.round(x), cy: Math.round(y), r: R, ways, features, surfaces } };
     return true;
   }
 

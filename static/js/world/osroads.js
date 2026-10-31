@@ -105,3 +105,22 @@ export function wayWidth(nodes, index, covered = () => true) {
   widths.sort((a, b) => a - b);
   return widths[widths.length >> 1];
 }
+
+/** The road surfaces of a cell as the server sends them ([kind, ring, hole, ...], rings [lon0, lat0, ...]):
+ *  [{kind: 'R' | 'P' | 'C', rings: [[lat0, lon0, lat1, lon1, ...], ...]}]. */
+export function parseSurfaces(cell) {
+  const out = [];
+  for (const p of (cell && cell.polys) || []) {
+    if (!Array.isArray(p) || p.length < 2 || !/^[RPC]$/.test(p[0])) continue;
+    const rings = [];
+    for (let r = 1; r < p.length; r++) {
+      const src = p[r];
+      if (!Array.isArray(src) || src.length < 6) { if (r === 1) break; continue; }
+      const ring = [];
+      for (let i = 0; i + 1 < src.length; i += 2) ring.push(src[i + 1], src[i]);
+      rings.push(ring);
+    }
+    if (rings.length) out.push({ kind: p[0], rings });
+  }
+  return out;
+}

@@ -369,7 +369,12 @@ every 10 m away from its ends, a sample matching the nearest link within 8 m and
 only when 60% of the samples inside loaded cells match (`world/osroads.js`, `MapData._osApply`, `way.osWidth`).
 `laneLayout` uses it where OSM gives no width (lanes down to 2.0 m, since OS's is the real kerb-to-kerb width),
 and a two-way road OSM gives no lane count for that is under 4.2 m wide is drawn as single track. Lane counts,
-arrows and limits stay OSM's. Only the APK serves `/map/os/`.
+arrows and limits stay OSM's. The same setting brings OS's surveyed road surfaces (Road Track Or Path,
+`trn-fts-roadtrackorpath-3`, `GET /map/ossurf/<klat>/<klon>`, kept as `surf_<klat>_<klon>.json`): the ground-level
+outline of every carriageway, pavement and central reservation. The worker hands those within the roads layer's
+radius to the network (`layer.surfaces`), whose meshes (roadnetgeom.js, triangulated with earcut) add the carriageway
+to the strips, so junction mouths and widenings are filled as they really are, and lay pavements and reservations
+over the strips and their lines, so the road shows only where it is. Only the APK serves `/map/os/` and `/map/ossurf/`.
 
 Nothing of the map is ever dropped from disk, and it is fetched ahead: as the car moves, the worker asks its
 server to download everything within *Display → Map download* (default 25 km; `POST /map/prefetch {lat, lon,

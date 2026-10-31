@@ -19,6 +19,8 @@ export class RoadNetwork {
     const over = (units) => ({ polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -units, forceSinglePass: true });
     this.mats = {
       strip: new THREE.MeshBasicMaterial({ color: 0x1e2127, fog: true, side, ...over(2) }),
+      // Ordnance Survey's pavements and central reservations, over the strips and their lines (roadnetgeom.js)
+      pave: new THREE.MeshBasicMaterial({ color: 0x2a2d33, fog: true, side, ...over(6) }),
       edge: new THREE.MeshBasicMaterial({ color: 0x6c727b, transparent: true, opacity: 0.6, fog: true, depthWrite: false, side, ...over(4) }),
       center: new THREE.MeshBasicMaterial({ color: 0xdcaa2e, transparent: true, opacity: 0.5, fog: true, depthWrite: false, side, ...over(4) }),
       lane: new THREE.MeshBasicMaterial({ color: 0x8e949d, transparent: true, opacity: 0.45, fog: true, depthWrite: false, side, ...over(4) }),
@@ -29,7 +31,7 @@ export class RoadNetwork {
     for (const k in this.mats) {
       const m = new THREE.Mesh(new THREE.BufferGeometry(), this.mats[k]);
       m.frustumCulled = false;
-      m.renderOrder = k === 'strip' ? 0 : 1;
+      m.renderOrder = k === 'strip' ? 0 : k === 'pave' ? 2 : 1;
       this.group.add(m);
       this.meshes[k] = m;
     }
@@ -48,6 +50,7 @@ export class RoadNetwork {
 
   setTheme(t, dark) {
     this.mats.strip.color.set(t.ground).lerp(new THREE.Color(t.road), dark ? 0.35 : 0.07);
+    this.mats.pave.color.set(t.ground).lerp(new THREE.Color(t.road), dark ? 0.15 : 0.02).lerp(new THREE.Color(t.edge), 0.12);
     this.mats.edge.color.set(t.edge);
     this.mats.center.color.set(t.yellow);
     this.mats.lane.color.set(t.line);

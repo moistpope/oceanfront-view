@@ -401,7 +401,8 @@ export class Settings {
     body.append(el('div.section', el('h3', 'Map data'),
       el('p.desc', 'Where the roads come from. OpenStreetMap everywhere; in Great Britain, Ordnance Survey can add how wide each road ' +
         'really is (kerb to kerb), which OSM rarely says there, so the lanes are drawn at their real width and single-track lanes ' +
-        'show as one lane. Lane counts, arrows and speed limits still come from OSM.'),
+        'show as one lane, and its surveyed outlines of the road, pavements and central reservations, so junctions, kerbs and ' +
+        'islands are drawn where they really are. Lane counts, lines, arrows and speed limits still come from OSM.'),
       this.app.segmented([['osm', 'OpenStreetMap'], ['os', 'OSM + Ordnance Survey']], os ? 'os' : 'osm', v => { set('mapSource', v); this.showOsStatus(); }),
       ...(os ? [
         el('p.desc', 'Needs a free OS Data Hub account (osdatahub.os.uk) on the Premium plan, which includes \u00a31,000 of premium data ' +

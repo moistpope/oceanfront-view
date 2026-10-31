@@ -85,13 +85,16 @@ async function fetchPrefetch(lat, lon, km) {
 let osFetch = null;
 function makeOsFetch(key, cap) {
   if (!key) return null;
-  return async (klat, klon) => {
+  const get = (kind) => async (klat, klon) => {
     const lat = klat * FEAT_DEG, lon = klon * FEAT_DEG;
     if (lat < 49.8 || lat >= 61 || lon < -8.8 || lon >= 2) return null;
-    const r = await fetch(`/map/os/${klat}/${klon}`, { headers: { 'X-OS-Key': key, 'X-OS-Cap': String(cap) } });
+    const r = await fetch(`/map/${kind}/${klat}/${klon}`, { headers: { 'X-OS-Key': key, 'X-OS-Cap': String(cap) } });
     if (!r.ok) return null;
     return r.json();
   };
+  const f = get('os');
+  f.surface = get('ossurf');   // the road surfaces (/map/ossurf/), osroads.js parseSurfaces
+  return f;
 }
 let prefetchKm = 25;
 let localT = -1e9;           // when the last IBUS frame came in (page clock, s)

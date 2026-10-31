@@ -92,3 +92,35 @@ describe('single-track roads', () => {
     assert.equal(laneLayout({ lanes: 0, oneWay: false, detail: null, osWidth: 5.5 }, 1).lanes, 2);
   });
 });
+
+describe('road surfaces', () => {
+  test('parsed, projected, found near a point, and handed to the roads layer meshes', async () => {
+    const { parseSurfaces } = await import('../osroads.js');
+    const { roadArrays } = await import('../../roadnetgeom.js');
+    const ringOf = (pts) => pts.flatMap(([x, y]) => { const [la, lo] = at(x, y); return [lo, la]; });
+    const polys = [
+      ['R', ringOf([[-50, -4], [50, -4], [50, 4], [-50, 4]])],
+      ['P', ringOf([[-50, 4], [50, 4], [50, 7], [-50, 7]])],
+      ['C', ringOf([[-10, -0.5], [10, -0.5], [10, 0.5], [-10, 0.5]]), ringOf([[-1, -0.2], [1, -0.2], [1, 0.2]])],
+      ['X', ringOf([[0, 0], [1, 0], [1, 1]])],
+    ];
+    const parsed = parseSurfaces({ polys });
+    assert.deepEqual(parsed.map(p => [p.kind, p.rings.length]), [['R', 1], ['P', 1], ['C', 2]]);
+    const md = new MapData(async () => null);
+    md.setOrigin({ lat: LAT, lon: LON, seq: 1 });
+    const v = md.surfVersion;
+    md.addOsSurfaces(Math.floor(LAT / FEAT_DEG), Math.floor(LON / FEAT_DEG), polys);
+    assert.ok(md.surfVersion > v);
+    const near = md.surfacesNear(0, 0, 20);
+    assert.equal(near.length, 3);
+    const road = near.find(p => p.kind === 'R');
+    assert.ok(Math.abs(road.box[0] + 50) < 0.01 && Math.abs(road.box[3] - 4) < 0.01, String(road.box));
+    assert.equal(md.surfacesNear(500, 500, 20).length, 0);
+    // the meshes: the road joins the strips, the pavement and the reservation (with its hole) are their own
+    const surfaces = near.map(p => ({ kind: p.kind, rings: p.xy.map(xy => { const r = []; for (let i = 0; i < xy.length; i += 2) r.push([xy[i], xy[i + 1]]); return r; }) }));
+    const a = roadArrays({ ways: [], features: [], surfaces }, true, false);
+    assert.equal(a.strip.idx.length, 6);       // one quad
+    assert.ok(a.pave.idx.length >= 6 + 3 * 6, String(a.pave.idx.length));   // the pavement's quad, the ring around the hole
+    assert.equal(roadArrays({ ways: [], features: [] }, true, false).pave.idx.length, 0);
+  });
+});

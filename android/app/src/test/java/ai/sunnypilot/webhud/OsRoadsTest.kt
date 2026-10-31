@@ -39,11 +39,45 @@ class OsRoadsTest {
         assertEquals("DUAL", b.getString(3))
     }
 
+    private fun ring(vararg xy: Double) = JSONArray().also { r ->
+        for (i in xy.indices step 2) r.put(JSONArray().put(xy[i]).put(xy[i + 1]))
+        r.put(JSONArray().put(xy[0]).put(xy[1]))   // closed, as GeoJSON has it
+    }
+
+    private fun surface(desc: String, geometry: JSONObject, obscured: Boolean = false) = JSONObject()
+        .put("geometry", geometry)
+        .put("properties", JSONObject().put("description", desc).put("isobscured", obscured).put("physicallevel", "Surface Level"))
+
+    @Test
+    fun compactSurfaceKeepsGroundLevelRoadsAndPavements() {
+        val square = JSONObject().put("type", "Polygon").put("coordinates", JSONArray()
+            .put(ring(0.0, 51.0, 0.001, 51.0, 0.001, 51.001, 0.0, 51.001))
+            .put(ring(0.0002, 51.0002, 0.0004, 51.0002, 0.0004, 51.0004)))
+        val multi = JSONObject().put("type", "MultiPolygon").put("coordinates", JSONArray()
+            .put(JSONArray().put(ring(0.0, 51.0, 0.001, 51.0, 0.001, 51.001)))
+            .put(JSONArray().put(ring(0.002, 51.0, 0.003, 51.0, 0.003, 51.001))))
+        val out = JSONArray()
+        OsRoads.compactSurface(JSONArray()
+            .put(surface("Road", square))
+            .put(surface("Pavement", multi))
+            .put(surface("Path", square))
+            .put(surface("Road", square, obscured = true)), out)
+        assertEquals(3, out.length())
+        val road = out.getJSONArray(0)
+        assertEquals("R", road.getString(0))
+        assertEquals(3, road.length())                  // the outline and its hole
+        assertEquals(8, road.getJSONArray(1).length())  // four points, not closed
+        assertEquals(6, road.getJSONArray(2).length())
+        assertEquals("P", out.getJSONArray(1).getString(0))
+        assertEquals("P", out.getJSONArray(2).getString(0))
+    }
+
     @Test
     fun pathsAndBounds() {
         assertEquals(Pair(1030, -3), OsRoads.parsePath("/map/os/1030/-3"))
         assertNull(OsRoads.parsePath("/map/os/status"))
         assertNull(OsRoads.parsePath("/map/features/1030/-3"))
+        assertEquals(Pair(1030, -3), OsRoads.parsePath("/map/ossurf/1030/-3", "ossurf"))
         assertTrue(OsRoads.inGb(1030, -3))      // London
         assertFalse(OsRoads.inGb(642, -1667))   // Georgia
     }
