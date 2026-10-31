@@ -36,6 +36,7 @@ class LocalServer(
     private val mapTiles: MapTiles? = null,
     private val mapFeatures: MapFeatures? = null,
     private val mapPrefetch: MapPrefetch? = null,
+    private val osRoads: OsRoads? = null,
     /** The app's own API under /app/ (the Comma tab, [CommaManager]): (method, path, query, body, X-App-Token) -> (status, JSON). */
     private val app: ((String, String, Map<String, String>, String?, String?) -> Pair<Int, String>)? = null,
     private val onDeviceUnreachable: () -> Unit,
@@ -127,6 +128,7 @@ class LocalServer(
                     path.startsWith("/map/tile/") -> serveTile(client, method, path, text)
                     path.startsWith("/map/features/") -> serveFeatures(client, method, path, text)
                     path.startsWith("/map/ways/") -> serveWays(client, method, path)
+                    path.startsWith("/map/os/") -> serveOs(client, method, path, text)
                     path == "/map/prefetch" || path == "/map/status" -> servePrefetch(client, method, path, text)
                     path.startsWith("/app/") -> serveApp(client, method, path, target.substringAfter('?', ""), text)
                     else -> serveAsset(client, method, path, text)
@@ -328,6 +330,26 @@ class LocalServer(
         out.flush()
     }
 
+    /** Ordnance Survey's road widths for a map cell (OsRoads), fetched once with the page's key; GET /map/os/status: the month's requests. */
+    private fun serveOs(client: Socket, method: String, path: String, head: String) {
+        val out = client.getOutputStream()
+        if (path == "/map/os/status") {
+            val body = (osRoads?.status()?.toString() ?: "{}").toByteArray()
+            respond(out, 200, "OK", "application/json", body, mapOf("Cache-Control" to "no-store"), method == "HEAD")
+            out.flush()
+            return
+        }
+        val parsed = OsRoads.parsePath(URLDecoder.decode(path, "UTF-8"))
+        val cap = header(head, "X-OS-Cap")?.trim()?.toIntOrNull() ?: OS_CAP
+        val file = if (parsed == null || osRoads == null) null else osRoads.cell(parsed.first, parsed.second, header(head, "X-OS-Key"), cap)
+        if (file == null) {
+            respond(out, 404, "Not Found", "text/plain", "no OS roads for this cell".toByteArray(), emptyMap(), method == "HEAD")
+            return
+        }
+        respond(out, 200, "OK", "application/json", file.readBytes(), mapOf("Cache-Control" to "no-store"), method == "HEAD")
+        out.flush()
+    }
+
     /** POST /map/prefetch {lat, lon, radius_km}: download the map around the car (MapPrefetch); GET /map/status: how far it got. */
     private fun servePrefetch(client: Socket, method: String, path: String, head: String) {
         val out = client.getOutputStream()
@@ -441,6 +463,8 @@ class LocalServer(
         /** Fixed, so the page's origin and its saved settings stay the same from launch to launch. */
         const val PREFERRED_PORT = 18088
         const val WWW = "www"
+        /** Ordnance Survey requests a month when the page sends no cap of its own. */
+        const val OS_CAP = 5000
         private const val CONNECT_TIMEOUT_MS = 2000
         private const val HEAD_TIMEOUT_MS = 5000
         private const val MAX_HEAD = 64 * 1024

@@ -131,6 +131,7 @@ export function laneLayout(way, dir = 1, laneW = LANE_W) {
   const total = ours + theirs + centre;
   let W = laneW;
   if (d && d.width) { const w = d.width / total; if (w >= LANE_W_MIN && w <= LANE_W_MAX) W = w; }
+  else if (way && way.osWidth) { const w = way.osWidth / total; if (w >= OS_LANE_W_MIN && w <= LANE_W_MAX) W = w; }
   return { lanes: total, ours, theirs, centre, laneW: W, width: total * W, turns, detailed };
 }
 

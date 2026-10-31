@@ -27,7 +27,7 @@ const DEFAULTS = {
   showTracks: true, showRadar: false, radarAllTracks: false, showLowConf: false, showObjectStats: false, objectMode: 'world',
   laneHeadingSign: 1, laneCurvatureSign: 1, objectHeadingSign: 1, laneConfThreshold: LANE_CONF_THRESHOLD,
   showFps: true, renderScale: 'auto', showMusic: true, showNav: true, demoInfotainment: false, demoCarState: false, carDemo: false,
-  calibration: true, mapPrefetchKm: 25, positionSource: 'car', roadcam: 'mirror', groundStyle: 'perforated',
+  calibration: true, mapPrefetchKm: 25, mapSource: 'osm', osKey: '', osCap: 5000, positionSource: 'car', roadcam: 'mirror', groundStyle: 'perforated',
   layout: 'auto', drum: false, driverSide: 'auto',
 };
 
@@ -156,10 +156,17 @@ class App {
     if (key === 'demoCarState') this.carState.apply();
     if (key === 'calibration') this.worker.postMessage({ type: 'calibration', on: value });
     if (key === 'mapPrefetchKm') this.worker.postMessage({ type: 'mapPrefetch', km: Number(value) });
+    if (key === 'mapSource' || key === 'osKey' || key === 'osCap') this.postOs(this.worker);
     if (key === 'positionSource') this.applyPositionSource();
     if (key === 'layout' || key === 'drum') this.updateLayout();
     if (!this.car.apa) this.scene.update(this.state, this.settings);
     if (this.ui.isOpen && this.ui.tab === 'display') this.ui.show('display', true);
+  }
+
+  /** The map data source (settings.js Map data): Ordnance Survey's road widths on top of OSM in Great Britain, with the user's key. */
+  postOs(w) {
+    const s = this.settings;
+    if (w) w.postMessage({ type: 'osRoads', on: s.mapSource === 'os' && !!s.osKey, key: s.osKey || '', cap: Number(s.osCap) || 5000 });
   }
 
   applyTheme() {
@@ -246,6 +253,7 @@ class App {
     };
     w.postMessage({ type: 'calibration', on: this.settings.calibration !== false });
     w.postMessage({ type: 'mapPrefetch', km: Number(this.settings.mapPrefetchKm ?? 25) });
+    this.postOs(w);
     w.postMessage({ type: 'position', source: this.settings.positionSource });
     const text = (path, required) => fetch(path, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(`${path}: ${r.status}`); return r.text(); })
       .catch(e => { if (required) throw e; return null; });

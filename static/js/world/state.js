@@ -34,6 +34,7 @@ const DEVICE_LAG_S = [0.05, 2.0];
 // the roads around the car for the view's map layer: every drivable way within ROADS_R, rebuilt once the car has
 // moved ROADS_STEP from the last build (or the tiles changed), and sent only then
 const ROADS_R = 320, ROADS_STEP = 40;
+const SINGLE_TRACK_M = 4.2;   // m: an Ordnance Survey carriageway narrower than this is a single-track road (two cars can't pass)
 // the map's point features (mapdata.js feature cells) that ride along in the layer, by their OSM tag
 const FEATURE_KINDS = { traffic_signals: 'signal', stop: 'stop', give_way: 'yield', crossing: 'crossing', mini_roundabout: 'miniRoundabout' };
 const FEAT_MAX = 160;         // nearest first

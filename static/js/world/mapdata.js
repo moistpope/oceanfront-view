@@ -15,6 +15,7 @@
 // road where its coordinate is a node of the road's way (the same OSM node), which state.js matches up.
 import { decodeTile, tileFor } from './osmtile.js';
 import { wayDetail } from './roaddetail.js';
+import { parseLinks, LinkIndex, wayWidth } from './osroads.js';
 
 const DEG = Math.PI / 180;
 const EARTH_R = 6378137.0;
@@ -26,6 +27,7 @@ const RETRY_S = 15;           // after a failed fetch
 export const FEAT_DEG = 0.05; // feature cells: ~5.5 x 4.6 km here
 const FEAT_PREFETCH_M = 1500; // load the feature cells within this of the car
 const FEAT_CACHE = 40;
+const OS_RETRY_S = 60;        // an Ordnance Survey cell that failed (no key, over the cap, out of GB) isn't asked for again sooner
 // the server is asked to download the whole map within `prefetchKm` of the car (road tiles and features, kept on
 // disk) whenever the car has moved PREFETCH_MOVE_M since the last ask, or PREFETCH_EVERY_S have passed
 const PREFETCH_EVERY_S = 120, PREFETCH_MOVE_M = 3000;
@@ -52,6 +54,8 @@ export class MapData {
     this.version = 0;            // bumps when the index changes
     this.featureCells = new Map(); // "klat,klon" -> {key, nodes: [{id, lat, lon, tags, x, y}], at, loading, failedAt}
     this.featVersion = 0;        // bumps when the loaded features change
+    this.fetchOs = null;         // (klat, klon) -> Ordnance Survey road links of a FEAT_DEG cell (osroads.js), when that source is on
+    this.osCells = new Map();    // "klat,klon" -> {key, klat, klon, links, at, loading, failedAt}
   }
 
   // ---- frame ------------------------------------------------------------------------------------
@@ -98,6 +102,7 @@ export class MapData {
     const e = this.tiles.get(keyOf(here));
     if (e) e.at = now;
     this._wantFeatures(lat, lon, now);
+    this._wantOs(lat, lon, now);
     this._askPrefetch(lat, lon, now);
     return !!(e && e.tile);
   }
@@ -130,6 +135,7 @@ export class MapData {
       e.tile = decodeTile(bytes);
       e.failedAt = null;
       this._detail(e);
+      this._osApply([e]);
       if (this.origin) { this._project(e); this._reindex(); }
       this._evict();
     }, (err) => { e.loading = false; e.failedAt = now; e.error = String(err && err.message || err); });
@@ -195,6 +201,86 @@ export class MapData {
     }
     return true;
   }
+
+  // ---- Ordnance Survey widths (osroads.js) -----------------------------------------------------
+
+  /** Turn the Ordnance Survey road widths on (fetchOs(klat, klon) -> a cell {links} or null) or off (null). */
+  setOs(fetchOs) {
+    if (fetchOs === this.fetchOs) return;
+    this.fetchOs = fetchOs;
+    this.osCells.clear();
+    let any = false;
+    for (const e of this.tiles.values()) if (e.tile) for (const way of e.tile.ways) if (way.osWidth != null) { way.osWidth = null; any = true; }
+    if (any) this.version++;
+  }
+
+  _wantOs(lat, lon, now) {
+    if (!this.fetchOs) return;
+    const fetchOs = this.fetchOs;
+    const dLat = FEAT_PREFETCH_M / (DEG * EARTH_R), dLon = FEAT_PREFETCH_M / (DEG * EARTH_R * Math.cos(lat * DEG));
+    const k0 = Math.floor((lat - dLat) / FEAT_DEG), k1 = Math.floor((lat + dLat) / FEAT_DEG);
+    const l0 = Math.floor((lon - dLon) / FEAT_DEG), l1 = Math.floor((lon + dLon) / FEAT_DEG);
+    for (let k = k0; k <= k1; k++) for (let l = l0; l <= l1; l++) {
+      const key = k + ',' + l;
+      let c = this.osCells.get(key);
+      if (c && (c.links || c.loading || (c.failedAt != null && now - c.failedAt < OS_RETRY_S))) { c.at = now; continue; }
+      if (!c) { c = { key, klat: k, klon: l, links: null, at: now, loading: false, failedAt: null }; this.osCells.set(key, c); }
+      c.loading = true;
+      const p = Promise.resolve().then(() => fetchOs(k, l)).then((cell) => {
+        c.loading = false;
+        if (this.fetchOs !== fetchOs) return;   // turned off (or the key changed) meanwhile
+        if (!cell || !Array.isArray(cell.links)) { c.failedAt = now; return; }
+        c.links = parseLinks(cell);
+        c.failedAt = null;
+        this._osApply([...this.tiles.values()]);
+        this._evictOs();
+      }, (err) => { c.loading = false; c.failedAt = now; c.error = String(err && err.message || err); });
+      this.pending.set('os:' + key, p);
+      p.finally(() => this.pending.delete('os:' + key));
+    }
+  }
+
+  /** Put an Ordnance Survey cell in directly (tests and tools): links as the server sends them. */
+  addOsCell(klat, klon, links, now = 0) {
+    const key = klat + ',' + klon;
+    this.osCells.set(key, { key, klat, klon, links: parseLinks({ links }), at: now, loading: false, failedAt: null });
+    this._osApply([...this.tiles.values()]);
+  }
+
+  /** Give the ways of these tiles that lie in loaded OS cells their width (way.osWidth). */
+  _osApply(entries) {
+    const cells = [...this.osCells.values()].filter(c => c.links);
+    if (!cells.length) return;
+    let s = Infinity, w = Infinity, n = -Infinity, e = -Infinity;
+    for (const c of cells) {
+      s = Math.min(s, c.klat * FEAT_DEG); n = Math.max(n, (c.klat + 1) * FEAT_DEG);
+      w = Math.min(w, c.klon * FEAT_DEG); e = Math.max(e, (c.klon + 1) * FEAT_DEG);
+    }
+    const index = new LinkIndex((s + n) / 2, (w + e) / 2);
+    for (const c of cells) index.add(c.links);
+    const covered = (lat, lon) => this.osCells.get(Math.floor(lat / FEAT_DEG) + ',' + Math.floor(lon / FEAT_DEG))?.links != null;
+    let any = false;
+    for (const t of entries) {
+      if (!t.tile) continue;
+      for (const way of t.tile.ways) {
+        if (way.maxLat < s || way.minLat > n || way.maxLon < w || way.minLon > e) continue;
+        const width = wayWidth(way.nodes, index, covered);
+        if (width !== (way.osWidth ?? null)) { way.osWidth = width; any = true; }
+      }
+    }
+    if (any) this.version++;
+  }
+
+  _evictOs() {
+    while (this.osCells.size > FEAT_CACHE) {
+      let oldest = null;
+      for (const c of this.osCells.values()) if (!c.loading && (oldest === null || c.at < oldest.at)) oldest = c;
+      if (oldest === null) return;
+      this.osCells.delete(oldest.key);
+    }
+  }
+
+  get osLoaded() { return [...this.osCells.values()].filter(c => c.links).length; }
 
   // ---- features ---------------------------------------------------------------------------------
 

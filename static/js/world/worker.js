@@ -23,7 +23,7 @@
 //               {type:'raw', source, data}           the watched messages' decoded signals, ~5 Hz
 import { DBC, hexToBytes } from './dbc.js';
 import { StateBuilder, wireFrames } from './state.js';
-import { MapData } from './mapdata.js';
+import { MapData, FEAT_DEG } from './mapdata.js';
 import { CommaMerge } from './merge.js';
 
 const RAW_RATE_HZ = 5;
@@ -79,6 +79,20 @@ async function fetchWays(tlat, tlon) {
 async function fetchPrefetch(lat, lon, km) {
   await fetch('/map/prefetch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat, lon, radius_km: km }) });
 }
+/** GET /map/os/<klat>/<klon>: a FEAT_DEG cell's Ordnance Survey road links (osroads.js, OsRoads.kt) with the user's key, or
+ *  null. Only for cells in Great Britain, and only while that map data is on (a new key makes a new function, so the
+ *  map asks again). */
+let osFetch = null;
+function makeOsFetch(key, cap) {
+  if (!key) return null;
+  return async (klat, klon) => {
+    const lat = klat * FEAT_DEG, lon = klon * FEAT_DEG;
+    if (lat < 49.8 || lat >= 61 || lon < -8.8 || lon >= 2) return null;
+    const r = await fetch(`/map/os/${klat}/${klon}`, { headers: { 'X-OS-Key': key, 'X-OS-Cap': String(cap) } });
+    if (!r.ok) return null;
+    return r.json();
+  };
+}
 let prefetchKm = 25;
 let localT = -1e9;           // when the last IBUS frame came in (page clock, s)
 let localPostT = -1e9;       // when the car's view was last posted
@@ -95,12 +109,14 @@ self.onmessage = (ev) => {
     if (msg.type === 'init') {
       builder = new StateBuilder(new DBC(msg.worldDbc), msg.radarDbc ? new DBC(msg.radarDbc) : null, { mapData: new MapData(fetchTile, fetchFeatures, fetchPrefetch, fetchWays) });
       builder.map.setPrefetchKm(prefetchKm);
+      builder.map.setOs(osFetch);
       builder.setCalibration(calibrationOn);
       builder.setPositionSource(positionSource);
       if (msg.ibusDbc) {
         local = new StateBuilder(new DBC(msg.ibusDbc), msg.radarDbc ? new DBC(msg.radarDbc) : null,
           { gearMsg: 0x234, staleS: LOCAL_STALE_S, mapData: new MapData(fetchTile, fetchFeatures, fetchPrefetch, fetchWays) });
         local.map.setPrefetchKm(prefetchKm);
+        local.map.setOs(osFetch);
         local.setCalibration(calibrationOn);
         local.setPositionSource(positionSource);
         local.setBrand('fisker');
@@ -138,6 +154,10 @@ self.onmessage = (ev) => {
       if (local) local.setPositionSource(positionSource);
     } else if (msg.type === 'location') {
       if (local) local.feedLocation(msg.fix, msg.t);   // the car's own view only: the comma's replays have fixes of their own
+    } else if (msg.type === 'osRoads') {
+      osFetch = msg.on ? makeOsFetch(String(msg.key || '').trim(), Number(msg.cap) || 5000) : null;
+      if (builder && builder.map) builder.map.setOs(osFetch);
+      if (local && local.map) local.map.setOs(osFetch);
     } else if (msg.type === 'mapPrefetch') {
       prefetchKm = Number(msg.km) || 0;
       if (builder && builder.map) builder.map.setPrefetchKm(prefetchKm);

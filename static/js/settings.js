@@ -284,7 +284,7 @@ export class Settings {
   // split into sections picked from a bar at the top, so no page is one long list
   renderDisplay() {
     const sec = this.displaySection;
-    this.laneConfNow = this.positionNow = null;   // only the Road section shows them
+    this.laneConfNow = this.positionNow = this.osStatus = null;   // only the Road section shows them
     this.body.append(el('div.subnav', this.app.segmented([['general', 'General'], ['road', 'Road'], ['objects', 'Objects'], ['debug', 'Debug']], sec,
       v => { this.displaySection = v; this.show('display'); })));
     ({ general: () => this.displayGeneral(), road: () => this.displayRoad(), objects: () => this.displayObjects(), debug: () => this.displayDebug() })[sec]();
@@ -391,6 +391,27 @@ export class Settings {
       this.app.segmented([['0', 'Off'], ['10', '10 km'], ['25', '25 km'], ['50', '50 km'], ['100', '100 km']], String(s.mapPrefetchKm ?? 25), v => set('mapPrefetchKm', Number(v))),
       this.mapStatus));
     this.showMapStatus();
+    // Ordnance Survey's road widths on top of OSM in Great Britain (osroads.js, OsRoads.kt)
+    const os = s.mapSource === 'os';
+    this.osStatus = el('small.cur', '');
+    const key = el('input.sig-filter', { type: 'password', autocomplete: 'off', spellcheck: false, placeholder: 'OS Data Hub API key',
+      value: s.osKey || '', onchange: (e) => { set('osKey', e.target.value.trim()); this.showOsStatus(); } });
+    const cap = el('input', { type: 'number', min: 0, step: 500, value: Number(s.osCap) || 5000,
+      onchange: (e) => set('osCap', Math.max(0, Math.round(Number(e.target.value) || 0))) });
+    body.append(el('div.section', el('h3', 'Map data'),
+      el('p.desc', 'Where the roads come from. OpenStreetMap everywhere; in Great Britain, Ordnance Survey can add how wide each road ' +
+        'really is (kerb to kerb), which OSM rarely says there, so the lanes are drawn at their real width and single-track lanes ' +
+        'show as one lane. Lane counts, arrows and speed limits still come from OSM.'),
+      this.app.segmented([['osm', 'OpenStreetMap'], ['os', 'OSM + Ordnance Survey']], os ? 'os' : 'osm', v => { set('mapSource', v); this.showOsStatus(); }),
+      ...(os ? [
+        el('p.desc', 'Needs a free OS Data Hub account (osdatahub.os.uk) on the Premium plan, which includes \u00a31,000 of premium data ' +
+          'a month at no charge, and an API project with "OS NGD API \u2013 Features" added. Paste the project\'s key here. Each area is ' +
+          'downloaded once (about 5 \u00d7 5 km, one request per 100 roads) and kept; the requests stop for the month at the limit below.'),
+        key,
+        el('div.rows', el('div.row', el('div.lbl', el('b', 'Requests a month, at most')), cap)),
+      ] : []),
+      this.osStatus));
+    this.showOsStatus();
     // where the pose's fixes and heading come from (state.js setPositionSource)
     this.positionNow = el('small.cur', '');
     body.append(el('div.section', el('h3', 'Position'),
@@ -427,6 +448,21 @@ export class Settings {
       if (!st.center) { out.textContent = 'Waiting for a position.'; return; }
       out.textContent = `Within ${st.radius_km} km: ${st.roads_ready}/${st.tiles} road tiles, ${st.features_ready}/${st.tiles} feature tiles` +
         (st.busy ? ', downloading' : '') + (st.errors ? `, ${st.errors} failed` : '');
+    }).catch(() => { out.textContent = ''; });
+  }
+
+  /** How much Ordnance Survey data the server has, and this month's requests (GET /map/os/status). */
+  showOsStatus() {
+    const out = this.osStatus;
+    if (!out) return;
+    const s = this.app.settings;
+    if (s.mapSource !== 'os') { out.textContent = ''; return; }
+    if (!s.osKey) { out.textContent = 'Paste a key to turn it on.'; return; }
+    fetch('/map/os/status').then(r => (r.ok ? r.json() : null)).then((st) => {
+      if (!st || out !== this.osStatus) return;
+      if (st.requests == null) { out.textContent = 'Needs the HUD\'s Android app.'; return; }
+      out.textContent = `${st.cells} area${st.cells === 1 ? '' : 's'} downloaded, ${st.requests} request${st.requests === 1 ? '' : 's'} this month` +
+        (st.error ? `. Last error: ${st.error}` : '');
     }).catch(() => { out.textContent = ''; });
   }
 

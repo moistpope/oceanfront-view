@@ -359,6 +359,18 @@ stale, and two signs for one limit confuse). So the car is placed on the map, an
 the roads around it and what stands along them are there whether or not the matcher has an opinion about
 them.
 
+In Great Britain the road widths can come from Ordnance Survey (*Display → Map data*, "OSM + Ordnance Survey",
+with the user's OS Data Hub key): OSM there rarely tags `width`, while OS's Road Link (OS NGD API – Features,
+`trn-ntwk-roadlink-5`, premium data within the account's free monthly allowance) measures every carriageway
+kerb to kerb. The APK fetches a 0.05 deg cell's road links once (`GET /map/os/<klat>/<klon>`, headers `X-OS-Key`
+and `X-OS-Cap`, `OsRoads.kt`, kept under `<files>/os/roads/`, the month's requests counted and capped,
+`GET /map/os/status`), and the worker gives an OSM way the median width of the OS links it runs along: sampled
+every 10 m away from its ends, a sample matching the nearest link within 8 m and 25 deg, the way taking a width
+only when 60% of the samples inside loaded cells match (`world/osroads.js`, `MapData._osApply`, `way.osWidth`).
+`laneLayout` uses it where OSM gives no width (lanes down to 2.0 m, since OS's is the real kerb-to-kerb width),
+and a two-way road OSM gives no lane count for that is under 4.2 m wide is drawn as single track. Lane counts,
+arrows and limits stay OSM's. Only the APK serves `/map/os/`.
+
 Nothing of the map is ever dropped from disk, and it is fetched ahead: as the car moves, the worker asks its
 server to download everything within *Display → Map download* (default 25 km; `POST /map/prefetch {lat, lon,
 radius_km}`, every 3 km or 2 min), and the server (`maptiles.py` `MapPrefetch` / `MapPrefetch.kt`) works
