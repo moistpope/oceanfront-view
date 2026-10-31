@@ -69,15 +69,9 @@ class OsRoads(private val root: File) {
         Log.i(TAG, "fetching OS roads $klat/$klon ($bbox)")
         val links = JSONArray()
         var offset = 0
-        var filtered = true
         while (true) {
             if (usage().second >= cap) throw IOException("monthly request cap ($cap) reached")
-            val page = try {
-                get(itemsUrl(bbox, offset, filtered, key))
-            } catch (e: HttpException) {
-                // a filter the server won't take: ask for every link and drop the paths here
-                if (e.code == 400 && filtered && offset == 0) { filtered = false; continue } else throw e
-            }
+            val page = getRetrying(itemsUrl(bbox, offset, key))
             val features = page.optJSONArray("features") ?: JSONArray()
             compact(features, links)
             val returned = page.optInt("numberReturned", features.length())
@@ -94,11 +88,21 @@ class OsRoads(private val root: File) {
         Log.i(TAG, "OS roads $klat/$klon: ${links.length()} links with a width")
     }
 
-    /** Coordinates come back as lon, lat (CRS84), the API's default. */
-    private fun itemsUrl(bbox: String, offset: Int, filtered: Boolean, key: String): String {
-        val q = StringBuilder("$BASE_URL?key=${enc(key)}&bbox=$bbox&limit=$PAGE&offset=$offset")
-        if (filtered) q.append("&filter=").append(enc(FILTER)).append("&filter-lang=cql-text")
-        return q.toString()
+    /** Coordinates come back as lon, lat (CRS84), the API's default. Every link comes, paths too: a CQL filter on the
+     *  road kinds times out (504) over a city cell, so [compact] drops the ones cars don't drive on. */
+    private fun itemsUrl(bbox: String, offset: Int, key: String) = "$BASE_URL?key=${enc(key)}&bbox=$bbox&limit=$PAGE&offset=$offset"
+
+    /** A page, asked again a couple of times while the API is busy (429, 5xx). */
+    private fun getRetrying(url: String): JSONObject {
+        for (attempt in 1..TRIES) {
+            try {
+                return get(url)
+            } catch (e: HttpException) {
+                if (attempt == TRIES || (e.code != 429 && e.code < 500)) throw e
+                Thread.sleep(RETRY_PAUSE_MS * attempt)
+            }
+        }
+        throw IOException("unreachable")
     }
 
     private class HttpException(val code: Int) : IOException("HTTP $code")
@@ -148,12 +152,12 @@ class OsRoads(private val root: File) {
         private const val MAX_LINKS = 20_000    // a cell's worth in the densest city is well under this
         private const val USAGE = "usage.json"
         private const val RETRY_MS = 60_000L
+        private const val TRIES = 3
+        private const val RETRY_PAUSE_MS = 2_000L
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 60_000
         private const val USER_AGENT = "oceanscape/1.0 (OS road widths)"
         /** The links cars drive on: no paths, tracks, subways or footbridges. */
-        private const val FILTER = "description IN ('Single Carriageway','Dual Carriageway','Collapsed Dual Carriageway','Slip Road'," +
-            "'Roundabout','Shared Use Carriageway','Service Road','Layby','Enclosed Traffic Area','Traffic Island Link','Traffic Island Link At Junction')"
         private val ROADS = setOf("Single Carriageway", "Dual Carriageway", "Collapsed Dual Carriageway", "Slip Road", "Roundabout",
             "Shared Use Carriageway", "Service Road", "Layby", "Enclosed Traffic Area", "Traffic Island Link", "Traffic Island Link At Junction")
 
