@@ -7,6 +7,23 @@
 const FT = 0.3048;
 export const LANE_W = 3.6;   // m: a lane when OSM gives no width
 const LANE_W_MIN = 2.4, LANE_W_MAX = 4.6;   // m: a width tag that gives lanes outside this is the wrong kind of width (with verges, say)
+const OS_LANE_W_MIN = 2.0;   // m: Ordnance Survey's widths are measured kerb to kerb, so a narrow British lane is a real one
+
+const SINGLE_TRACK_M = 4.2;   // m: an Ordnance Survey carriageway narrower than this is a single-track road (two cars can't pass)
+
+/** A two-way road with one lane for both directions (passing places): OSM's lanes=1, or, where OSM gives no lane
+ *  count, an Ordnance Survey width too narrow for two lanes. */
+export function singleTrack(way) {
+  if (!way || way.oneWay) return false;
+  const d = way.detail;
+  if (way.lanes === 1 || (d && d.lanes === 1)) return true;
+  return !(way.lanes > 0) && !(d && d.lanes) && way.osWidth > 0 && way.osWidth < SINGLE_TRACK_M;
+}
+
+/** A way's carriageway width: OSM's own tag, else Ordnance Survey's (osroads.js), else null. */
+export function widthOf(way) {
+  return (way && way.detail && way.detail.width) || (way && way.osWidth) || null;
+}
 
 /** A width tag in meters ("7", "7 m", "7.5m", "23'", "23 ft", "6'6\""), or null. */
 export function parseWidth(v) {
@@ -92,7 +109,11 @@ export function lanesOf(way) {
 export function laneLayout(way, dir = 1, laneW = LANE_W) {
   const d = way && way.detail, lanes = lanesOf(way || {});
   let ours, theirs, centre = 0, turns = null, detailed = false;
-  if (way && way.oneWay) {
+  if (singleTrack(way)) {
+    // one lane both ways share: the car drives down the middle of it
+    ours = 1; theirs = 0;
+    detailed = !!(d && d.lanes === 1) || way.lanes === 1;
+  } else if (way && way.oneWay) {
     ours = Math.max(1, (d && d.fwd) || lanes); theirs = 0;
     turns = d && d.turnsFwd && d.turnsFwd.length === ours ? d.turnsFwd : null;
     detailed = !!(d && d.fwd);
