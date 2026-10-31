@@ -25,6 +25,7 @@ const SHIFT_TAU_S = 1.5;                 // s: the slide closes on its target wi
 const SHIFT_RATE = 0.4;                  // m/s: ...and never faster
 const SHIFT_MAX = 12.0;                  // m: the most the map is slid (beyond it the lanes and the map disagree about the road; the
                                          // slide stays at the limit rather than letting go, so nothing jumps)
+const SHIFT_CATCHUP_S = 3.0;             // s: after the match moves to another way, the slide closes at SHIFT_TAU_S alone this long
 const LANE_CHANGE_W = 0.5;               // lane widths the ego lane's center jumps by when the cameras move us to the next lane
 const GPS_LANE_W = 0.8;                  // lane widths the GPS must put us over by...
 const GPS_LANE_S = 5.0;                  // ...for this long, before the drawn lane moves over by one
@@ -71,7 +72,7 @@ export function laneCenters(lanes, oneWay, W = LANE_W, leftTraffic = false, spli
 
 /** A fresh placement state (kept by the view between frames). */
 export function freshPlacement() {
-  return { lane: null, shift: 0, dh: 0, laneW: LANE_W, hold: 0, yCenterPrev: null, gpsT: 0, wayId: null };
+  return { lane: null, shift: 0, dh: 0, laneW: LANE_W, hold: 0, yCenterPrev: null, gpsT: 0, wayId: null, catchUp: 0 };
 }
 
 /**
@@ -121,13 +122,18 @@ export function placeInLane(place, frame, road, dt) {
     p.gpsT += place ? dt : GPS_LANE_S;
     if (p.gpsT >= GPS_LANE_S) { p.lane = clamp(p.lane + Math.sign(err), 0, centers.length - 1); p.gpsT = 0; }
   } else p.gpsT = Math.max(0, p.gpsT - dt);
+  // another way: its lanes needn't line up with the last one's (Whitehall's 2+2 becoming a one-way carriageway moves the
+  // kerb lane 3.6 m), so the target jumps with no motion of ours or the map's; capped, the slide took 8 s to follow and the
+  // car was drawn across the lane line all that time
+  if (p.wayId != null && frame.wayId !== p.wayId) p.catchUp = SHIFT_CATCHUP_S;
   p.wayId = frame.wayId;
   // the slide: the centerline drawn at yCenter - laneCenter, so the ego lane's center is where the cameras see it
   const laneCenter = centers[p.lane];
   const target = clamp((yCenter - laneCenter) - frame.yMap0, -SHIFT_MAX, SHIFT_MAX);
   let dShift = (target - p.shift) * k(SHIFT_TAU_S);
-  if (place) dShift = clamp(dShift, -SHIFT_RATE * dt, SHIFT_RATE * dt);
+  if (place && !(p.catchUp > 0)) dShift = clamp(dShift, -SHIFT_RATE * dt, SHIFT_RATE * dt);
   p.shift += dShift;
+  p.catchUp = Math.max(0, (p.catchUp || 0) - (place ? dt : 0));
   // no turn: the pose's heading (the car's heading sensor, 0.15 deg) places the map's direction; letting the lanes
   // turn it about the car, even by a degree or two, swung everything far ahead as the angle settled
   p.dh = 0;

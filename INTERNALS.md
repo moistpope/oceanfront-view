@@ -301,7 +301,9 @@ ways into the pose's frame and indexes their segments on a grid. The matcher sco
 by distance and heading (one-way respected), stays on the current way until an unconnected one has won for
 a while or the current one has ended, and follows the most likely continuation (same ref or name, then the
 smallest turn) ~500 m ahead into a *horizon*: the centerline polyline in the pose frame with the roads
-branching off it (offset along, angle, class, name). The match is which road and roughly where along it,
+branching off it (offset along, angle, class, name). Turning at the first junction ahead (the indicator, else
+the yaw rate) takes the horizon onto that branch and holds it for 2 s, unless the car yaws the other way: a jog
+in the road (Whitehall round the island by Great Scotland Yard) yaws the car one way, then back. The match is which road and roughly where along it,
 never which lane. On the recorded drives it agreed with mapd's road name 90-100% of the time
 (`tools/map_eval.mjs`).
 
@@ -315,7 +317,8 @@ with the carriageway as wide as the lane count says, and the lane lines are the 
 (edges, a two-way road's centerline, lane boundaries) as parallel offsets of it, opened at the junctions
 along it. What the cameras add is *which lane* the car is drawn in: the map has no lanes and the GPS and
 the OSM centerline are both meter-level, so the car is placed in a lane of the map's road (counted from the
-right) and the whole map slides sideways -- with a 1.5 s time constant, never faster than 0.4 m/s -- so
+right) and the whole map slides sideways -- with a 1.5 s time constant, never faster than 0.4 m/s but for
+3 s after the match moves to another way, whose lanes needn't line up with the last one's -- so
 that lane's center passes where the cameras see the ego lane's center at the car (lanes 3.6 m wide, the
 map's, since the network's lines are drawn with that). A lane change moves the lane index, not the map. Without lanes
 seen the car keeps the lane it had (or starts in the right lane); only a GPS that insists for five seconds

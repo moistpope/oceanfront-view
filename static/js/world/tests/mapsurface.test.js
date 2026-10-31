@@ -190,6 +190,24 @@ describe('placeInLane', () => {
     for (let i = 0; i < 20; i++) { r = placeInLane(place, frame(-1.8, 2, true), noLanes, 0.1); assert.ok(Math.abs(r.shift - prev) <= 0.04 + 1e-9); prev = r.shift; }
   });
 
+  test('a new way whose lanes are elsewhere: the slide catches up in seconds, then is rate-limited again', () => {
+    const place = freshPlacement();
+    const noLanes = roadModel(0, 0, 0, false);
+    // one-way, two lanes, the pose has us in the left one (1.8 m left of the centerline): nothing to slide
+    let r;
+    for (let i = 0; i < 20; i++) r = placeInLane(place, frame(-1.8, 2, true), noLanes, 0.1);
+    assert.equal(r.lane, 1);
+    assert.ok(Math.abs(r.shift) < 1e-6, String(r.shift));
+    // the next way is a 2+2 road along the same line: its lane 1 is 1.8 m right of its centerline, 3.6 m from the car
+    const next = { ...frame(-1.8, 4, false), wayId: 2 };
+    for (let i = 0; i < 30; i++) r = placeInLane(place, next, noLanes, 0.1);   // 3 s
+    const off = -1.8 + r.shift + r.laneCenter;   // the drawn lane's center from the car: yMap0 + shift + laneCenter
+    assert.ok(Math.abs(off) < 0.6, `the car is near its lane's center 3 s on: ${off}`);
+    // on the same way a jump in the target is rate-limited as before
+    let prev = r.shift;
+    for (let i = 0; i < 20; i++) { r = placeInLane(place, { ...next, yMap0: 0 }, noLanes, 0.1); assert.ok(Math.abs(r.shift - prev) <= 0.04 + 1e-9); prev = r.shift; }
+  });
+
 });
 
 describe('mapRoadFrame', () => {
