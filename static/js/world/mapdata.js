@@ -15,7 +15,7 @@
 // road where its coordinate is a node of the road's way (the same OSM node), which state.js matches up.
 import { decodeTile, tileFor } from './osmtile.js';
 import { wayDetail } from './roaddetail.js';
-import { parseLinks, parseSurfaces, LinkIndex, wayWidth, snapNodes } from './osroads.js';
+import { parseLinks, parseSurfaces, LinkIndex, wayWidth, snapNodes, denseOnto } from './osroads.js';
 
 const DEG = Math.PI / 180;
 const EARTH_R = 6378137.0;
@@ -139,8 +139,11 @@ export class MapData {
       e.tile = decodeTile(bytes);
       e.failedAt = null;
       this._detail(e);
-      this._osApply([e]);
-      if (this.origin) { this._project(e); this._reindex(); }
+      const moved = this._osApply([e], null, false);
+      if (this.origin) {
+        this._project(e); this._reindex();
+        if (moved) this._projectFeaturesIn(e.tile.minLat, e.tile.minLon, e.tile.maxLat, e.tile.maxLon);
+      }
       this._evict();
     }, (err) => { e.loading = false; e.failedAt = now; e.error = String(err && err.message || err); });
     this.pending.set(key, p);
@@ -218,6 +221,7 @@ export class MapData {
     let any = false, moved = false;
     for (const e of this.tiles.values()) if (e.tile) for (const way of e.tile.ways) {
       if (way.osWidth != null) { way.osWidth = null; any = true; }
+      way.osDense = null;
       if (way.nodes0) { way.nodes = way.nodes0; way.nodes0 = null; moved = true; }
     }
     if (moved && this.origin) {
@@ -248,7 +252,7 @@ export class MapData {
         if (!cell || !Array.isArray(cell.links)) { c.failedAt = now; return; }
         c.links = parseLinks(cell);
         c.failedAt = null;
-        this._osApply([...this.tiles.values()]);
+        this._osApply([...this.tiles.values()], c);
         this._evictOs();
       }, (err) => { c.loading = false; c.failedAt = now; c.error = String(err && err.message || err); });
       this.pending.set('os:' + key, p);
@@ -315,66 +319,97 @@ export class MapData {
   addOsCell(klat, klon, links, now = 0) {
     const key = klat + ',' + klon;
     const old = this.osCells.get(key);
-    this.osCells.set(key, { key, klat, klon, links: parseLinks({ links }), at: now, loading: false, failedAt: null, surf: old ? old.surf : null });
-    this._osApply([...this.tiles.values()]);
+    const c = { key, klat, klon, links: parseLinks({ links }), at: now, loading: false, failedAt: null, surf: old ? old.surf : null };
+    this.osCells.set(key, c);
+    this._osApply([...this.tiles.values()], c);
   }
 
-  /** Give the ways of these tiles that lie in loaded OS cells their width (way.osWidth), and move their nodes onto
-   *  OS's centrelines (osroads.js snapNodes; way.nodes0 keeps OSM's). A node several ways share moves by the mean of
-   *  their moves, in every way that has it, so junctions stay joined; the point features on OSM's nodes move with
-   *  them (this.osShift, _projectFeatures). */
-  _osApply(entries) {
+  /** Give the ways of these tiles that lie in loaded OS cells their width (way.osWidth), and move them onto OS's
+   *  centrelines (way.nodes0 keeps OSM's nodes): each node by osroads.js snapNodes, and points put between nodes far
+   *  apart by denseOnto (way.osDense), so a long straight follows OS's bend. A node several ways share moves by the
+   *  mean of their moves, in every way that has it, so junctions stay joined; the point features on OSM's nodes move
+   *  with them (this.osShift, _projectFeatures). With `cell` (one that just arrived), only the ways reaching into it
+   *  are looked at; the rest keep what earlier cells gave them. Says whether any way changed; with `project`, the
+   *  changed tiles and the features near them are projected again. */
+  _osApply(entries, cell = null, project = true) {
     const cells = [...this.osCells.values()].filter(c => c.links);
-    if (!cells.length) return;
+    if (!cells.length) return false;
     let s = Infinity, w = Infinity, n = -Infinity, e = -Infinity;
-    for (const c of cells) {
+    for (const c of cell ? [cell] : cells) {
       s = Math.min(s, c.klat * FEAT_DEG); n = Math.max(n, (c.klat + 1) * FEAT_DEG);
       w = Math.min(w, c.klon * FEAT_DEG); e = Math.max(e, (c.klon + 1) * FEAT_DEG);
     }
     const index = new LinkIndex((s + n) / 2, (w + e) / 2);
-    for (const c of cells) index.add(c.links);
+    // the links of the cells around the box too: a way reaching out of it still matches along its whole length
+    for (const c of cells) {
+      if (c.klat * FEAT_DEG > n + FEAT_DEG || (c.klat + 1) * FEAT_DEG < s - FEAT_DEG) continue;
+      if (c.klon * FEAT_DEG > e + FEAT_DEG || (c.klon + 1) * FEAT_DEG < w - FEAT_DEG) continue;
+      index.add(c.links);
+    }
     const covered = (lat, lon) => this.osCells.get(Math.floor(lat / FEAT_DEG) + ',' + Math.floor(lon / FEAT_DEG))?.links != null;
-    let any = false;
     const moves = new Map();   // OSM node "lat,lon" -> [sum dLat, sum dLon, count]
-    const inBox = [];
+    const inBox = [];          // [entry, way]
+    let widened = false;
     for (const t of entries) {
       if (!t.tile) continue;
       for (const way of t.tile.ways) {
         if (way.maxLat < s || way.minLat > n || way.maxLon < w || way.minLon > e) continue;
         const orig = way.nodes0 || way.nodes;
-        inBox.push(way);
-        const width = wayWidth(orig, index, covered);
-        if (width !== (way.osWidth ?? null)) { way.osWidth = width; any = true; }
-        if (width == null || way.cls === 0) continue;
-        for (const [i, dLat, dLon] of snapNodes(orig, index, covered)) {
+        inBox.push([t, way]);
+        const width = way.cls === 0 ? null : wayWidth(orig, index, covered, way.oneWay);
+        if (width !== (way.osWidth ?? null)) { way.osWidth = width; widened = true; }
+        way.osDense = null;
+        if (width == null) continue;
+        for (const [i, dLat, dLon] of snapNodes(orig, index, covered, way.oneWay)) {
           const k = orig[2 * i] + ',' + orig[2 * i + 1];
           const m = moves.get(k);
           if (m) { m[0] += dLat; m[1] += dLon; m[2]++; } else moves.set(k, [dLat, dLon, 1]);
         }
+        const dense = denseOnto(orig, index, covered, way.oneWay);
+        if (dense.length) way.osDense = dense;
       }
     }
     if (!this.osShift) this.osShift = new Map();
     for (const [k, m] of moves) this.osShift.set(k, [m[0] / m[2], m[1] / m[2]]);
-    for (const way of inBox) {
+    const changed = new Set();
+    for (const [t, way] of inBox) {
       const orig = way.nodes0 || way.nodes;
-      let moved = null;
-      for (let i = 0; i < orig.length; i += 2) {
-        const d = this.osShift.get(orig[i] + ',' + orig[i + 1]);
-        if (!d) continue;
-        if (!moved) moved = Float64Array.from(orig);
-        moved[i] += d[0]; moved[i + 1] += d[1];
+      const dense = way.osDense;
+      let moved = !!dense;
+      if (!moved) for (let i = 0; i < orig.length && !moved; i += 2) moved = this.osShift.has(orig[i] + ',' + orig[i + 1]);
+      let next = orig;
+      if (moved) {
+        next = new Float64Array(orig.length + (dense ? dense.length * 2 : 0));
+        let o = 0, di = 0;
+        for (let i = 0; i < orig.length; i += 2) {
+          const d = this.osShift.get(orig[i] + ',' + orig[i + 1]);
+          next[o++] = orig[i] + (d ? d[0] : 0); next[o++] = orig[i + 1] + (d ? d[1] : 0);
+          while (dense && di < dense.length && dense[di][0] === i >> 1) { next[o++] = dense[di][1]; next[o++] = dense[di][2]; di++; }
+        }
       }
-      if (moved) { way.nodes0 = orig; way.nodes = moved; any = true; }
-    }
-    if (any) {
-      this.version++;
-      if (this.origin) {
-        for (const t of entries) if (t.tile) this._project(t);
-        this._reindex();
-        for (const c of this.featureCells.values()) if (c.nodes) this._projectFeatures(c);
-        this.featVersion++;
+      if (!sameNodes(next, way.nodes)) {
+        way.nodes0 = moved ? orig : null;
+        way.nodes = next;
+        changed.add(t);
       }
     }
+    if (changed.size || widened) this.version++;
+    if (changed.size && project && this.origin) {
+      for (const t of changed) this._project(t);
+      this._reindex();
+      this._projectFeaturesIn(s, w, n, e);
+    }
+    return changed.size > 0;
+  }
+
+  /** Project again the feature cells overlapping this box (their road nodes may have moved) and bump featVersion. */
+  _projectFeaturesIn(s, w, n, e) {
+    for (const c of this.featureCells.values()) {
+      if (!c.nodes || c.klat == null) { if (c.nodes) this._projectFeatures(c); continue; }
+      if (c.klat * FEAT_DEG > n || (c.klat + 1) * FEAT_DEG < s || c.klon * FEAT_DEG > e || (c.klon + 1) * FEAT_DEG < w) continue;
+      this._projectFeatures(c);
+    }
+    this.featVersion++;
   }
 
   _evictOs() {
@@ -570,3 +605,10 @@ export class MapData {
 }
 
 export const keyOf = (t) => `${t.cell}/${t.file}`;
+
+function sameNodes(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}

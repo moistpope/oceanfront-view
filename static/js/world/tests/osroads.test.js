@@ -18,8 +18,8 @@ function way(id, pts, extra = {}) {
     minLat: Math.min(...lats), maxLat: Math.max(...lats), minLon: Math.min(...lons), maxLon: Math.max(...lons), nodes, ...extra };
 }
 /** A link as the server sends it: [avg, min, dir, kind, lon0, lat0, ...]. */
-function link(w, pts, kind = 'SINGLE') {
-  return [w, w, 0, kind, ...pts.flatMap(([x, y]) => { const [la, lo] = at(x, y); return [lo, la]; })];
+function link(w, pts, kind = 'SINGLE', dir = 0) {
+  return [w, w, dir, kind, ...pts.flatMap(([x, y]) => { const [la, lo] = at(x, y); return [lo, la]; })];
 }
 
 describe('osroads', () => {
@@ -95,6 +95,42 @@ describe('osroads', () => {
     md.setOs(null);
     assert.ok(Math.abs(yOf(a.nodes[0]) - 3) < 1e-6);
     assert.ok(Math.abs(feat.y - 3) < 0.1, String(feat.y));
+  });
+
+  const loaded = (ways, links) => {
+    const md = new MapData(async () => null);
+    md.setOrigin({ lat: LAT, lon: LON, seq: 1 });
+    const t = tileFor(LAT, LON);
+    md.addTile(keyOf(t), { minLat: t.tLat, minLon: t.tLon, maxLat: t.tLat + 0.25, maxLon: t.tLon + 0.25, ways });
+    md.setOs(async () => null);
+    md.addOsCell(Math.floor(LAT / FEAT_DEG), Math.floor(LON / FEAT_DEG), links);
+    return md;
+  };
+  const yOf = (lat) => (lat - LAT) / M_LAT, xOf = (lon) => (lon - LON) / M_LON;
+
+  test('a long straight between far-apart nodes follows OS\'s bend', () => {
+    // OS's lane bows 4 m north between OSM's two nodes 150 m apart
+    const bow = []; for (let x = -100; x <= 100; x += 10) bow.push([x, 4 * Math.max(0, 1 - (x / 75) ** 2)]);
+    const lane = way(1, [[-75, 0], [75, 0]]);
+    loaded([lane], [link(3.0, bow)]);
+    assert.ok(lane.nodes.length > 8, String(lane.nodes.length));
+    for (let i = 0; i < lane.nodes.length; i += 2) {
+      const x = xOf(lane.nodes[i + 1]), want = 4 * Math.max(0, 1 - (x / 75) ** 2);
+      assert.ok(Math.abs(yOf(lane.nodes[i]) - want) < 0.3, `${x}: ${yOf(lane.nodes[i])} vs ${want}`);
+    }
+    for (let i = 2; i < lane.nodes.length; i += 2) assert.ok(lane.nodes[i + 1] > lane.nodes[i - 1], 'in order');
+  });
+
+  test('the two halves of a dual carriageway stay apart over a two-way OS link', () => {
+    const north = way(1, [[150, 3.5], [-150, 3.5]], { oneWay: true }), south = way(2, [[-150, -3.5], [150, -3.5]], { oneWay: true });
+    loaded([north, south], [link(14, [[-200, 0], [200, 0]])]);
+    assert.ok(Math.abs(yOf(north.nodes[0]) - 3.5) < 1e-6 && Math.abs(yOf(south.nodes[0]) + 3.5) < 1e-6);
+    assert.equal(north.osWidth ?? null, null);   // and neither takes the whole road's width
+    // OS's own one-way links: each half moves onto its own
+    const n2 = way(1, [[150, 3.5], [-150, 3.5]], { oneWay: true }), s2 = way(2, [[-150, -3.5], [150, -3.5]], { oneWay: true });
+    loaded([n2, s2], [link(7, [[200, 5], [-200, 5]], 'DUAL', 1), link(7, [[-200, -5], [200, -5]], 'DUAL', 1)]);
+    assert.ok(Math.abs(yOf(n2.nodes[0]) - 5) < 0.05 && Math.abs(yOf(s2.nodes[0]) + 5) < 0.05);
+    assert.equal(n2.osWidth, 7);
   });
 });
 

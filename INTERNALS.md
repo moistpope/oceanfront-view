@@ -374,7 +374,14 @@ arrows and limits stay OSM's. The same setting brings OS's surveyed road surface
 outline of every carriageway, pavement and central reservation. The worker hands those within the roads layer's
 radius to the network (`layer.surfaces`), whose meshes (roadnetgeom.js, triangulated with earcut) add the carriageway
 to the strips, so junction mouths and widenings are filled as they really are, and lay pavements and reservations
-over the strips and their lines, so the road shows only where it is. Only the APK serves `/map/os/` and `/map/ossurf/`.
+over the strips and their lines, so the road shows only where it is. Since the two maps were surveyed apart (by up
+to ~8 m), a way that takes an OS width is also moved onto OS's centreline (`osroads.js` `snapNodes`, `denseOnto`):
+each node onto the parallel link next to it, a shared node by the mean of its ways' moves so junctions stay joined,
+and points every 15 m put between far-apart nodes so a long OSM straight follows OS's bend (`way.nodes0` keeps OSM's
+nodes; point features on moved nodes move with them). A one-way way (half a dual carriageway) only matches one-way
+links, so the halves don't both land on a two-way link's middle. Only the ways reaching into a newly arrived cell are
+redone. Surface rings are stored as integer millionths of a degree from the cell's corner (`origin`). Only the APK
+serves `/map/os/` and `/map/ossurf/`.
 
 Nothing of the map is ever dropped from disk, and it is fetched ahead: as the car moves, the worker asks its
 server to download everything within *Display → Map download* (default 25 km; `POST /map/prefetch {lat, lon,

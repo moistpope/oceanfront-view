@@ -58,13 +58,14 @@ export class LinkIndex {
     }
   }
 
-  /** The nearest link segment within MATCH_M of (x, y) running along (ux, uy) either way, or null. */
-  match(x, y, ux, uy) {
+  /** The nearest link segment within MATCH_M of (x, y) running along (ux, uy) either way, or null; with oneWay, only
+   *  among one-way links (dir != 0), as one half of a dual carriageway is. */
+  match(x, y, ux, uy, oneWay = false) {
     const a = this.grid.get(Math.floor(x / GRID_M) + ',' + Math.floor(y / GRID_M));
     if (!a) return null;
     let best = null, bestD = MATCH_M;
     for (const s of a) {
-      if (Math.abs(s.ux * ux + s.uy * uy) < MATCH_COS) continue;
+      if (Math.abs(s.ux * ux + s.uy * uy) < MATCH_COS || (oneWay && !s.link.dir)) continue;
       const t = Math.max(0, Math.min(s.len, (x - s.x0) * s.ux + (y - s.y0) * s.uy));
       const d = Math.hypot(s.x0 + s.ux * t - x, s.y0 + s.uy * t - y);
       if (d < bestD) { bestD = d; best = s; }
@@ -74,8 +75,9 @@ export class LinkIndex {
 }
 
 /** The OS width of an OSM way (nodes: [lat0, lon0, ...]) from the index, or null when it doesn't run along OS links.
- *  covered(lat, lon) says whether OS links are loaded there (samples elsewhere neither match nor count against). */
-export function wayWidth(nodes, index, covered = () => true) {
+ *  covered(lat, lon) says whether OS links are loaded there (samples elsewhere neither match nor count against). A
+ *  one-way way only takes a one-way link's width: a two-way link's is both halves of the road. */
+export function wayWidth(nodes, index, covered = () => true, oneWay = false) {
   const pts = [];
   for (let i = 0; i + 1 < nodes.length; i += 2) pts.push(index.xy(nodes[i], nodes[i + 1]));
   let total = 0;
@@ -98,7 +100,7 @@ export function wayWidth(nodes, index, covered = () => true) {
     const x = ax + ux * t, y = ay + uy * t;
     if (!covered(index.lat0 + y / index.ky, index.lon0 + x / index.kx)) continue;
     samples++;
-    const s = index.match(x, y, ux, uy);
+    const s = index.match(x, y, ux, uy, oneWay);
     if (s) widths.push(s.link.w);
   }
   if (!samples || widths.length / samples < MIN_SHARE) return null;
@@ -109,8 +111,9 @@ export function wayWidth(nodes, index, covered = () => true) {
 /** Where an OSM way's nodes lie on the OS centrelines it runs along: [[i, dLat, dLon], ...] for each node (lat/lon
  *  pairs in `nodes`) with a parallel OS link within MATCH_M, the move onto the link's nearest point. The two maps were
  *  surveyed apart, by metres in places, and the road surfaces (parseSurfaces) are OS's: on OS's lines, the road, its
- *  lines and the car agree with them. */
-export function snapNodes(nodes, index, covered = () => true) {
+ *  lines and the car agree with them. A one-way OSM way (one half of a dual carriageway, mostly) only moves onto a
+ *  one-way OS link: onto a two-way one it would land on the middle of the whole road, both halves on the same line. */
+export function snapNodes(nodes, index, covered = () => true, oneWay = false) {
   const n = nodes.length >> 1, out = [];
   const xy = [];
   for (let i = 0; i < n; i++) xy.push(index.xy(nodes[2 * i], nodes[2 * i + 1]));
@@ -118,17 +121,44 @@ export function snapNodes(nodes, index, covered = () => true) {
     if (!covered(nodes[2 * i], nodes[2 * i + 1])) continue;
     // the way's direction at the node: across it, or along the one segment at an end
     const a = xy[Math.max(0, i - 1)], b = xy[Math.min(n - 1, i + 1)];
-    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    if (L < 0.01) continue;
-    const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, [x, y] = xy[i];
-    const s = index.match(x, y, ux, uy);
-    if (!s) continue;
-    const t = Math.max(0, Math.min(s.len, (x - s.x0) * s.ux + (y - s.y0) * s.uy));
-    const px = s.x0 + s.ux * t, py = s.y0 + s.uy * t;
-    if (Math.hypot(px - x, py - y) < 0.05) continue;
-    out.push([i, (py - y) / index.ky, (px - x) / index.kx]);
+    const m = snapAt(index, xy[i][0], xy[i][1], b[0] - a[0], b[1] - a[1], oneWay);
+    if (m) out.push([i, m[1] / index.ky, m[0] / index.kx]);
   }
   return out;
+}
+
+const DENSE_M = 15;   // OSM's long straights get a point this often between their nodes, each put on OS's line
+
+/** The points to put between an OSM way's nodes so that it follows OS's line where OS's bends and OSM's straight
+ *  doesn't (a lane with nodes 140 m apart): [[i, lat, lon], ...], each on the OS link next to the segment from node i
+ *  to node i + 1, in order. Points with no OS link alongside are left out (that stretch stays straight). */
+export function denseOnto(nodes, index, covered = () => true, oneWay = false) {
+  const n = nodes.length >> 1, out = [];
+  for (let i = 0; i + 1 < n; i++) {
+    const [ax, ay] = index.xy(nodes[2 * i], nodes[2 * i + 1]), [bx, by] = index.xy(nodes[2 * i + 2], nodes[2 * i + 3]);
+    const L = Math.hypot(bx - ax, by - ay);
+    const k = Math.floor(L / DENSE_M);
+    if (k < 2) continue;
+    for (let j = 1; j < k; j++) {
+      const t = j / k, x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+      const lat = index.lat0 + y / index.ky, lon = index.lon0 + x / index.kx;
+      if (!covered(lat, lon)) continue;
+      const m = snapAt(index, x, y, bx - ax, by - ay, oneWay);
+      if (m) out.push([i, lat + m[1] / index.ky, lon + m[0] / index.kx]);
+    }
+  }
+  return out;
+}
+
+/** The move [dx, dy] (m) from (x, y), heading (dx, dy), onto the nearest parallel OS link, or null. */
+function snapAt(index, x, y, dx, dy, oneWay) {
+  const L = Math.hypot(dx, dy);
+  if (L < 0.01) return null;
+  const s = index.match(x, y, dx / L, dy / L, oneWay);
+  if (!s) return null;
+  const t = Math.max(0, Math.min(s.len, (x - s.x0) * s.ux + (y - s.y0) * s.uy));
+  const mx = s.x0 + s.ux * t - x, my = s.y0 + s.uy * t - y;
+  return Math.hypot(mx, my) < 0.05 ? null : [mx, my];
 }
 
 /** The road surfaces of a cell as the server sends them ([kind, ring, hole, ...]; rings [x0, y0, ...] in millionths of
