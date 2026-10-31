@@ -50,7 +50,10 @@ export class RoadNetwork {
 
   setTheme(t, dark) {
     this.mats.strip.color.set(t.ground).lerp(new THREE.Color(t.road), dark ? 0.35 : 0.07);
-    this.mats.pave.color.set(t.ground).lerp(new THREE.Color(t.road), dark ? 0.15 : 0.02).lerp(new THREE.Color(t.edge), 0.12);
+    // pavements and islands: lighter than the road and the ground by day (paving against tarmac), a shade towards the
+    // kerb lines at night
+    if (dark) this.mats.pave.color.set(t.ground).lerp(new THREE.Color(t.edge), 0.18);
+    else this.mats.pave.color.set(t.ground).lerp(new THREE.Color(0xffffff), 0.75);
     this.mats.edge.color.set(t.edge);
     this.mats.center.color.set(t.yellow);
     this.mats.lane.color.set(t.line);

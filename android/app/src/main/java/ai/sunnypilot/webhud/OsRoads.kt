@@ -23,7 +23,8 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * The road surfaces come the same way (`/map/ossurf/<klat>/<klon>`, Road Track Or Path, trn-fts-roadtrackorpath-3): the
  * surveyed outline of every carriageway, pavement and central reservation at ground level, kept as
- * `surf_<klat>_<klon>.json` `{cell, at, polys: [[kind, [lon0, lat0, ...], [hole...], ...], ...]}`, kind R (the
+ * `surf_<klat>_<klon>.json` `{cell, at, origin: [lon, lat], polys: [[kind, [x0, y0, ...], [hole...], ...], ...]}` (x, y in
+ * millionths of a degree east and north of the cell's south-west corner, to keep a city cell's file small), kind R (the
  * carriageway: road, lay-by, shared use, crossing, traffic calming), P (pavement) or C (central reservation), for
  * the page to draw the road as it really is (static/js/world/osroads.js, roadnetgeom.js).
  *
@@ -43,7 +44,7 @@ class OsRoads(private val root: File) {
 
     /** The cell's road surfaces, likewise. */
     fun surface(klat: Int, klon: Int, key: String?, cap: Int): File? =
-        ensure(File(root, "surf_${klat}_$klon.json"), "surfaces $klat/$klon", klat, klon, key) { k -> fetch(klat, klon, k, cap, SURFACE, "polys") { a, b -> compactSurface(a, b) } }
+        ensure(File(root, "surf_${klat}_$klon.json"), "surfaces $klat/$klon", klat, klon, key) { k -> fetch(klat, klon, k, cap, SURFACE, "polys") { a, b -> compactSurface(a, b, klon * FEAT_DEG, klat * FEAT_DEG) } }
 
     private fun ensure(file: File, what: String, klat: Int, klon: Int, key: String?, fetch: (String) -> Unit): File? {
         if (!inGb(klat, klon)) return null
@@ -95,6 +96,7 @@ class OsRoads(private val root: File) {
         }
         root.mkdirs()
         val out = JSONObject().put("cell", JSONArray().put(klat).put(klon)).put("at", System.currentTimeMillis() / 1000).put(field, items)
+        if (collection == SURFACE) out.put("origin", JSONArray().put(w).put(s))
         val file = File(root, (if (collection == SURFACE) "surf_" else "") + "${klat}_$klon.json")
         val part = File(root, "${file.name}.part")
         part.writeText(out.toString())
@@ -221,8 +223,9 @@ class OsRoads(private val root: File) {
             "Traffic Calming" to "R", "Pavement" to "P", "Pavement And Steps" to "P", "Central Reservation" to "C")
 
         /** Append the ground-level road surfaces of a GeoJSON page, compacted, to [out]: [kind, ring, hole, ...] each ring
-         *  [lon0, lat0, lon1, lat1, ...] without the closing point. A multipolygon becomes one entry per polygon. */
-        fun compactSurface(features: JSONArray, out: JSONArray) {
+         *  [x0, y0, x1, y1, ...] in millionths of a degree from ([lon0], [lat0]), without the closing point. A multipolygon
+         *  becomes one entry per polygon. */
+        fun compactSurface(features: JSONArray, out: JSONArray, lon0: Double = 0.0, lat0: Double = 0.0) {
             for (i in 0 until features.length()) {
                 val f = features.optJSONObject(i) ?: continue
                 val p = f.optJSONObject("properties") ?: continue
@@ -243,7 +246,7 @@ class OsRoads(private val root: File) {
                         val n = ring.length() - 1   // GeoJSON repeats the first point last
                         for (j in 0 until n) {
                             val c = ring.optJSONArray(j) ?: continue
-                            flat.put(round6(c.getDouble(0))).put(round6(c.getDouble(1)))
+                            flat.put(Math.round((c.getDouble(0) - lon0) * 1e6)).put(Math.round((c.getDouble(1) - lat0) * 1e6))
                         }
                         if (flat.length() >= 6) entry.put(flat) else if (r == 0) break
                     }

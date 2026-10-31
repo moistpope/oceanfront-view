@@ -75,6 +75,27 @@ describe('osroads', () => {
     assert.equal(narrow.osWidth, null);
     assert.equal(laneLayout(wide).laneW, 3.6);
   });
+
+  test('a way 3 m off OS\'s centreline moves onto it, junction nodes and features with it, and back when off', () => {
+    const md = new MapData(async () => null);
+    md.setOrigin({ lat: LAT, lon: LON, seq: 1 });
+    const t = tileFor(LAT, LON);
+    const a = way(1, [[-150, 3], [0, 3], [150, 3]]), b = way(2, [[0, 3], [0, 150]]);
+    md.addTile(keyOf(t), { minLat: t.tLat, minLon: t.tLon, maxLat: t.tLat + 0.25, maxLon: t.tLon + 0.25, ways: [a, b] });
+    const [jLat, jLon] = at(0, 3);
+    const feat = { lat: jLat, lon: jLon };
+    md.featureCells.set('test', { nodes: [feat] });
+    md.setOs(async () => null);
+    md.addOsCell(Math.floor(LAT / FEAT_DEG), Math.floor(LON / FEAT_DEG), [link(6, [[-200, 0], [200, 0]])]);
+    const yOf = (lat) => (lat - LAT) / M_LAT;
+    for (let i = 0; i < a.nodes.length; i += 2) assert.ok(Math.abs(yOf(a.nodes[i])) < 0.05, String(yOf(a.nodes[i])));
+    assert.ok(Math.abs(yOf(b.nodes[0])) < 0.05, 'the side road keeps its end on the junction');
+    assert.ok(Math.abs(yOf(b.nodes[2]) - 150) < 0.05, 'and its far end where it was');
+    assert.ok(Math.abs(feat.y) < 0.1, String(feat.y));
+    md.setOs(null);
+    assert.ok(Math.abs(yOf(a.nodes[0]) - 3) < 1e-6);
+    assert.ok(Math.abs(feat.y - 3) < 0.1, String(feat.y));
+  });
 });
 
 describe('single-track roads', () => {

@@ -61,13 +61,15 @@ class OsRoadsTest {
             .put(surface("Road", square))
             .put(surface("Pavement", multi))
             .put(surface("Path", square))
-            .put(surface("Road", square, obscured = true)), out)
+            .put(surface("Road", square, obscured = true)), out, 0.0, 51.0)
         assertEquals(3, out.length())
         val road = out.getJSONArray(0)
         assertEquals("R", road.getString(0))
         assertEquals(3, road.length())                  // the outline and its hole
         assertEquals(8, road.getJSONArray(1).length())  // four points, not closed
         assertEquals(6, road.getJSONArray(2).length())
+        assertEquals(1000L, road.getJSONArray(1).getLong(2))   // millionths of a degree from the corner
+        assertEquals(1000L, road.getJSONArray(1).getLong(5))
         assertEquals("P", out.getJSONArray(1).getString(0))
         assertEquals("P", out.getJSONArray(2).getString(0))
     }

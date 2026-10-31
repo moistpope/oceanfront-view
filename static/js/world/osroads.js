@@ -106,18 +106,46 @@ export function wayWidth(nodes, index, covered = () => true) {
   return widths[widths.length >> 1];
 }
 
-/** The road surfaces of a cell as the server sends them ([kind, ring, hole, ...], rings [lon0, lat0, ...]):
- *  [{kind: 'R' | 'P' | 'C', rings: [[lat0, lon0, lat1, lon1, ...], ...]}]. */
+/** Where an OSM way's nodes lie on the OS centrelines it runs along: [[i, dLat, dLon], ...] for each node (lat/lon
+ *  pairs in `nodes`) with a parallel OS link within MATCH_M, the move onto the link's nearest point. The two maps were
+ *  surveyed apart, by metres in places, and the road surfaces (parseSurfaces) are OS's: on OS's lines, the road, its
+ *  lines and the car agree with them. */
+export function snapNodes(nodes, index, covered = () => true) {
+  const n = nodes.length >> 1, out = [];
+  const xy = [];
+  for (let i = 0; i < n; i++) xy.push(index.xy(nodes[2 * i], nodes[2 * i + 1]));
+  for (let i = 0; i < n; i++) {
+    if (!covered(nodes[2 * i], nodes[2 * i + 1])) continue;
+    // the way's direction at the node: across it, or along the one segment at an end
+    const a = xy[Math.max(0, i - 1)], b = xy[Math.min(n - 1, i + 1)];
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (L < 0.01) continue;
+    const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, [x, y] = xy[i];
+    const s = index.match(x, y, ux, uy);
+    if (!s) continue;
+    const t = Math.max(0, Math.min(s.len, (x - s.x0) * s.ux + (y - s.y0) * s.uy));
+    const px = s.x0 + s.ux * t, py = s.y0 + s.uy * t;
+    if (Math.hypot(px - x, py - y) < 0.05) continue;
+    out.push([i, (py - y) / index.ky, (px - x) / index.kx]);
+  }
+  return out;
+}
+
+/** The road surfaces of a cell as the server sends them ([kind, ring, hole, ...]; rings [x0, y0, ...] in millionths of
+ *  a degree from the cell's `origin` [lon, lat], or plain [lon0, lat0, ...] without one):
+ *  [{kind: 'R' | 'P' | 'C', rings: [Float64Array lat0, lon0, lat1, lon1, ...]}]. */
 export function parseSurfaces(cell) {
   const out = [];
+  const o = cell && Array.isArray(cell.origin) ? cell.origin : null, k = o ? 1e-6 : 1;
+  const lon0 = o ? o[0] : 0, lat0 = o ? o[1] : 0;
   for (const p of (cell && cell.polys) || []) {
     if (!Array.isArray(p) || p.length < 2 || !/^[RPC]$/.test(p[0])) continue;
     const rings = [];
     for (let r = 1; r < p.length; r++) {
       const src = p[r];
       if (!Array.isArray(src) || src.length < 6) { if (r === 1) break; continue; }
-      const ring = [];
-      for (let i = 0; i + 1 < src.length; i += 2) ring.push(src[i + 1], src[i]);
+      const ring = new Float64Array(src.length & ~1);
+      for (let i = 0; i + 1 < src.length; i += 2) { ring[i] = lat0 + src[i + 1] * k; ring[i + 1] = lon0 + src[i] * k; }
       rings.push(ring);
     }
     if (rings.length) out.push({ kind: p[0], rings });

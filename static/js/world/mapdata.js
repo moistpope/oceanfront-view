@@ -15,7 +15,7 @@
 // road where its coordinate is a node of the road's way (the same OSM node), which state.js matches up.
 import { decodeTile, tileFor } from './osmtile.js';
 import { wayDetail } from './roaddetail.js';
-import { parseLinks, parseSurfaces, LinkIndex, wayWidth } from './osroads.js';
+import { parseLinks, parseSurfaces, LinkIndex, wayWidth, snapNodes } from './osroads.js';
 
 const DEG = Math.PI / 180;
 const EARTH_R = 6378137.0;
@@ -27,6 +27,7 @@ const RETRY_S = 15;           // after a failed fetch
 export const FEAT_DEG = 0.05; // feature cells: ~5.5 x 4.6 km here
 const FEAT_PREFETCH_M = 1500; // load the feature cells within this of the car
 const FEAT_CACHE = 40;
+const OS_CACHE = 16;          // Ordnance Survey cells kept in memory (a city cell's surfaces are tens of thousands of polygons)
 const OS_RETRY_S = 60;        // an Ordnance Survey cell that failed (no key, over the cap, out of GB) isn't asked for again sooner
 // the server is asked to download the whole map within `prefetchKm` of the car (road tiles and features, kept on
 // disk) whenever the car has moved PREFETCH_MOVE_M since the last ask, or PREFETCH_EVERY_S have passed
@@ -213,9 +214,19 @@ export class MapData {
     this.fetchOs = fetchOs;
     this.osCells.clear();
     this.surfVersion++;
-    let any = false;
-    for (const e of this.tiles.values()) if (e.tile) for (const way of e.tile.ways) if (way.osWidth != null) { way.osWidth = null; any = true; }
-    if (any) this.version++;
+    this.osShift = null;
+    let any = false, moved = false;
+    for (const e of this.tiles.values()) if (e.tile) for (const way of e.tile.ways) {
+      if (way.osWidth != null) { way.osWidth = null; any = true; }
+      if (way.nodes0) { way.nodes = way.nodes0; way.nodes0 = null; moved = true; }
+    }
+    if (moved && this.origin) {
+      for (const e of this.tiles.values()) if (e.tile) this._project(e);
+      this._reindex();
+      for (const c of this.featureCells.values()) if (c.nodes) this._projectFeatures(c);
+      this.featVersion++;
+    }
+    if (any || moved) this.version++;
   }
 
   _wantOs(lat, lon, now) {
@@ -308,7 +319,10 @@ export class MapData {
     this._osApply([...this.tiles.values()]);
   }
 
-  /** Give the ways of these tiles that lie in loaded OS cells their width (way.osWidth). */
+  /** Give the ways of these tiles that lie in loaded OS cells their width (way.osWidth), and move their nodes onto
+   *  OS's centrelines (osroads.js snapNodes; way.nodes0 keeps OSM's). A node several ways share moves by the mean of
+   *  their moves, in every way that has it, so junctions stay joined; the point features on OSM's nodes move with
+   *  them (this.osShift, _projectFeatures). */
   _osApply(entries) {
     const cells = [...this.osCells.values()].filter(c => c.links);
     if (!cells.length) return;
@@ -321,19 +335,50 @@ export class MapData {
     for (const c of cells) index.add(c.links);
     const covered = (lat, lon) => this.osCells.get(Math.floor(lat / FEAT_DEG) + ',' + Math.floor(lon / FEAT_DEG))?.links != null;
     let any = false;
+    const moves = new Map();   // OSM node "lat,lon" -> [sum dLat, sum dLon, count]
+    const inBox = [];
     for (const t of entries) {
       if (!t.tile) continue;
       for (const way of t.tile.ways) {
         if (way.maxLat < s || way.minLat > n || way.maxLon < w || way.minLon > e) continue;
-        const width = wayWidth(way.nodes, index, covered);
+        const orig = way.nodes0 || way.nodes;
+        inBox.push(way);
+        const width = wayWidth(orig, index, covered);
         if (width !== (way.osWidth ?? null)) { way.osWidth = width; any = true; }
+        if (width == null || way.cls === 0) continue;
+        for (const [i, dLat, dLon] of snapNodes(orig, index, covered)) {
+          const k = orig[2 * i] + ',' + orig[2 * i + 1];
+          const m = moves.get(k);
+          if (m) { m[0] += dLat; m[1] += dLon; m[2]++; } else moves.set(k, [dLat, dLon, 1]);
+        }
       }
     }
-    if (any) this.version++;
+    if (!this.osShift) this.osShift = new Map();
+    for (const [k, m] of moves) this.osShift.set(k, [m[0] / m[2], m[1] / m[2]]);
+    for (const way of inBox) {
+      const orig = way.nodes0 || way.nodes;
+      let moved = null;
+      for (let i = 0; i < orig.length; i += 2) {
+        const d = this.osShift.get(orig[i] + ',' + orig[i + 1]);
+        if (!d) continue;
+        if (!moved) moved = Float64Array.from(orig);
+        moved[i] += d[0]; moved[i + 1] += d[1];
+      }
+      if (moved) { way.nodes0 = orig; way.nodes = moved; any = true; }
+    }
+    if (any) {
+      this.version++;
+      if (this.origin) {
+        for (const t of entries) if (t.tile) this._project(t);
+        this._reindex();
+        for (const c of this.featureCells.values()) if (c.nodes) this._projectFeatures(c);
+        this.featVersion++;
+      }
+    }
   }
 
   _evictOs() {
-    while (this.osCells.size > FEAT_CACHE) {
+    while (this.osCells.size > OS_CACHE) {
       let oldest = null;
       for (const c of this.osCells.values()) if (!c.loading && (oldest === null || c.at < oldest.at)) oldest = c;
       if (oldest === null) return;
@@ -380,7 +425,11 @@ export class MapData {
   }
 
   _projectFeatures(c) {
-    for (const n of c.nodes) { const [x, y] = this.toLocal(n.lat, n.lon); n.x = x; n.y = y; }
+    for (const n of c.nodes) {
+      const d = this.osShift && this.osShift.get(n.lat + ',' + n.lon);   // its road node moved onto OS's line (_osApply)
+      const [x, y] = d ? this.toLocal(n.lat + d[0], n.lon + d[1]) : this.toLocal(n.lat, n.lon);
+      n.x = x; n.y = y;
+    }
   }
 
   _evictFeatures() {
