@@ -359,7 +359,14 @@ stale, and two signs for one limit confuse). So the car is placed on the map, an
 the roads around it and what stands along them are there whether or not the matcher has an opinion about
 them.
 
-In Great Britain the road widths can come from Ordnance Survey (*Display → Map data*, "OSM + Ordnance Survey",
+The country the car is in is looked up from its position (`region.js`, in `borders_data.js`: Natural Earth's 1:50m
+borders through world-atlas, built by `tools/make_borders.py`), remembered across starts, and switched only after
+30 s in a new one so a fix near a border doesn't flip the units. The settings' Auto follows it (`regional.js`): the
+traffic side, the units of the camera's speed-limit readings (mph in the UK, where the ADAS reports 30 mph signs as
+km/h), the sign drawn (US or round) and the map data (Ordnance Survey in the UK when there's a key); before it's
+known, the car's own signals. Each can still be overridden (*Display → Country → Override*).
+
+In Great Britain the road widths can come from Ordnance Survey (*Display → Map data*, Auto or "OSM + Ordnance Survey",
 with the user's OS Data Hub key): OSM there rarely tags `width`, while OS's Road Link (OS NGD API – Features,
 `trn-ntwk-roadlink-5`, premium data within the account's free monthly allowance) measures every carriageway
 kerb to kerb. The APK fetches a 0.05 deg cell's road links once (`GET /map/os/<klat>/<klon>`, headers `X-OS-Key`

@@ -6,6 +6,7 @@ import { OCEAN_PAINTS, OCEAN_WHEELS, oceanPaint } from './models.js';
 import { RX_IDS } from './ibus_tables.js';
 import { CommaPanel } from './comma.js';
 import { GROUND_STYLES } from './groundstyle/index.js';
+import { currentCountry } from './regional.js';
 
 // tab -> what it needs the comma for
 const OFFLINE_TABS = new Map([
@@ -319,18 +320,31 @@ export class Settings {
       this.app.segmented(GROUND_STYLES.map(g => [g.id, g.label]), s.groundStyle || 'perforated', v => set('groundStyle', v))));
     body.append(el('div.section', el('h3', 'Speed units'),
       this.app.segmented([['auto', 'Follow cluster'], ['mph', 'mph'], ['kmh', 'km/h']], s.units, v => set('units', v))));
-    body.append(el('div.section', el('h3', 'Traffic side'),
-      el('p.desc', 'Which side of a two-way road to drive on. For the UK, choose Left.'),
-      this.app.segmented([['auto', 'Follow car'], ['left', 'Left (UK)'], ['right', 'Right']], s.trafficSide || 'auto', v => set('trafficSide', v))));
+    // the country the car is in sets the side of the road, the sign units and the sign (region.js); each can be
+    // overridden under Override
+    const c = currentCountry();
+    const auto = c ? `Auto (${c.name})` : 'Auto';
+    const what = c ? `${c.name}: drives on the ${c.left ? 'left' : 'right'}, speed limits in ${c.mph ? 'mph' : 'km/h'}, ` +
+      `${c.usSign ? 'US' : 'round'} speed-limit signs${c.gb ? ', Ordnance Survey map data with a key' : ''}.`
+      : 'Not known yet: it is worked out from the car\'s position once there is a GPS fix (until then the car\'s own settings are used).';
+    const overridden = ['trafficSide', 'cameraSignUnits', 'signStyle'].some(k => s[k] && s[k] !== 'auto');
+    body.append(el('div.section', el('h3', 'Country'),
+      el('p.desc', 'Which side of the road, the units of the speed-limit signs the camera reads and the sign drawn all follow ' +
+        'the country the car is in, found from its GPS position (and remembered for the next start).'),
+      el('p.desc', el('b', what)),
+      el('details', overridden ? { open: true } : {},
+        el('summary', overridden ? 'Override (in use)' : 'Override'),
+        el('div.section', el('h3', 'Traffic side'),
+          this.app.segmented([['auto', auto], ['left', 'Left'], ['right', 'Right']], s.trafficSide || 'auto', v => set('trafficSide', v))),
+        el('div.section', el('h3', 'Camera speed-sign units'),
+          el('p.desc', 'Units of the number read from signs, before display conversion.'),
+          this.app.segmented([['auto', auto], ['mph', 'mph'], ['kmh', 'km/h']], s.cameraSignUnits || 'auto', v => set('cameraSignUnits', v))),
+        el('div.section', el('h3', 'Speed-sign style'),
+          el('p.desc', 'The speed limit sign drawn on the HUD and by the road.'),
+          this.app.segmented([['auto', auto], ['round', 'Round (UK/EU)'], ['us', 'US']], s.signStyle || 'auto', v => set('signStyle', v))))));
     body.append(el('div.section', el('h3', 'Driver\'s side'),
       el('p.desc', 'The status card and the controls (the menu, what\'s playing, the replay) go on the driver\'s side, the energy card and the chips on the other. Follow traffic puts the driver on the right where traffic keeps left.'),
       this.app.segmented([['auto', 'Follow traffic'], ['left', 'Left'], ['right', 'Right']], s.driverSide || 'auto', v => set('driverSide', v))));
-    body.append(el('div.section', el('h3', 'Camera speed-sign units'),
-      el('p.desc', 'Units of the number read from signs, before display conversion. Choose mph for UK signs if Follow car converts them incorrectly.'),
-      this.app.segmented([['auto', 'Follow car'], ['mph', 'mph'], ['kmh', 'km/h']], s.cameraSignUnits || 'auto', v => set('cameraSignUnits', v))));
-    body.append(el('div.section', el('h3', 'Speed-sign style'),
-      el('p.desc', 'The speed limit sign drawn on the HUD and by the road. Follow units uses the US sign for mph, except with left-hand (UK) traffic.'),
-      this.app.segmented([['auto', 'Follow units'], ['round', 'Round (UK/EU)'], ['us', 'US']], s.signStyle || 'auto', v => set('signStyle', v))));
     const paint = oceanPaint(s.egoPaint);
     body.append(el('div.section', el('h3', 'Paint', el('small', `${paint.name} · ${paint.finish.toLowerCase()}`)),
       el('div.swatches', OCEAN_PAINTS.map(p => el('button.swatch' + (p === paint ? '.on' : ''),
@@ -392,7 +406,9 @@ export class Settings {
       this.mapStatus));
     this.showMapStatus();
     // Ordnance Survey's road widths on top of OSM in Great Britain (osroads.js, OsRoads.kt)
-    const os = s.mapSource === 'os';
+    const src = s.mapSource === 'os' || s.mapSource === 'osm' ? s.mapSource : 'auto';
+    const os = src !== 'osm';
+    const cn = currentCountry();
     this.osStatus = el('small.cur', '');
     const key = el('input.sig-filter', { type: 'password', autocomplete: 'off', spellcheck: false, placeholder: 'OS Data Hub API key',
       value: s.osKey || '', onchange: (e) => { set('osKey', e.target.value.trim()); this.showOsStatus(); } });
@@ -403,7 +419,9 @@ export class Settings {
         'really is (kerb to kerb), which OSM rarely says there, so the lanes are drawn at their real width and single-track lanes ' +
         'show as one lane, and its surveyed outlines of the road, pavements and central reservations, so junctions, kerbs and ' +
         'islands are drawn where they really are. Lane counts, lines, arrows and speed limits still come from OSM.'),
-      this.app.segmented([['osm', 'OpenStreetMap'], ['os', 'OSM + Ordnance Survey']], os ? 'os' : 'osm', v => { set('mapSource', v); this.showOsStatus(); }),
+      el('p.desc', 'Auto adds Ordnance Survey in the UK (with a key below) and uses OpenStreetMap alone everywhere else' +
+        (cn ? `; now ${cn.gb ? 'OSM + Ordnance Survey' : 'OpenStreetMap'} (${cn.name}).` : '.')),
+      this.app.segmented([['auto', 'Auto'], ['osm', 'OpenStreetMap'], ['os', 'OSM + Ordnance Survey']], src, v => { set('mapSource', v); this.showOsStatus(); }),
       ...(os ? [
         el('p.desc', 'Needs a free OS Data Hub account (osdatahub.os.uk) on the Premium plan, which includes \u00a31,000 of premium data ' +
           'a month at no charge, and an API project with "OS NGD API \u2013 Features" added. Paste the project\'s key here. Each area is ' +
@@ -457,7 +475,7 @@ export class Settings {
     const out = this.osStatus;
     if (!out) return;
     const s = this.app.settings;
-    if (s.mapSource !== 'os') { out.textContent = ''; return; }
+    if (s.mapSource === 'osm') { out.textContent = ''; return; }
     if (!s.osKey) { out.textContent = 'Paste a key to turn it on.'; return; }
     fetch('/map/os/status').then(r => (r.ok ? r.json() : null)).then((st) => {
       if (!st || out !== this.osStatus) return;

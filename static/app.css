@@ -254,6 +254,10 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bord
 .section h3 code { font-size: 12px; color: var(--muted); font-weight: 500; }
 .section h3 small { font-size: 13px; color: var(--muted); font-weight: 500; }
 p.desc { margin: 0 0 10px; font-size: 13px; color: var(--muted); line-height: 1.4; }
+p.desc b { color: var(--text); font-weight: 600; }
+.section details > summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; color: var(--muted); }
+.section details[open] > summary { margin-bottom: 8px; }
+.section details > .section { margin: 0 0 14px; }
 .badge { font-size: 10px; font-weight: 700; letter-spacing: .6px; padding: 3px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); text-transform: uppercase; }
 .badge.gray { background: var(--line); color: var(--muted); }
 .banner { padding: 10px 12px; border-radius: 12px; font-size: 13px; margin-bottom: 14px; background: var(--accent-soft); color: var(--text); }
