@@ -1,7 +1,7 @@
 // The road reference placed from a map horizon (static/js/mapsurface.js): the map's shape, the car put in a lane on it.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { POLY_MAX, lineAlong, mapReference, mapRoadFrame, mapAlignMatrix, laneCenters, freshPlacement, placeInLane } from '../../mapsurface.js';
+import { POLY_MAX, lineAlong, mapReference, mapRoadFrame, mapAlignMatrix, laneCenters, freshPlacement, placeInLane, smoothLine } from '../../mapsurface.js';
 
 const AXLE = 4.775 - 0.93;
 const DEG = Math.PI / 180;
@@ -385,5 +385,19 @@ describe('mapAlignMatrix', () => {
     const ahead = apply(m, toLocal(103.8, 0));             // 100 m ahead turns 10 deg to the left (north: -X)
     assert.ok(Math.abs(ahead[0] - (-100 * Math.sin(10 * DEG))) < 1e-9 && Math.abs(ahead[2] - (-(3.8 + 100 * Math.cos(10 * DEG)))) < 1e-9, String(ahead));
     assert.equal(mapAlignMatrix({ shift: 0, rotated: 0, yMap0: 0 }, pose, 3.8), null);
+  });
+});
+
+describe('smoothLine on sparse nodes', () => {
+  test('the curve through a road\'s bare nodes and through the matcher\'s horizon (extra points on the straights) agree', () => {
+    // a bend between nodes 150-200 m apart: spread down the straights, the two curves were metres apart, so the car
+    // (placed on the horizon's) sat off the road drawn (the network's)
+    const nodes = [[-200, 0], [0, 0], [150, 50], [300, 60]];
+    const horizon = [[-200, 0], [-120, 0], [-40, 0], [-5, 0], [0, 0], [60, 20], [150, 50], [300, 60]];
+    const A = smoothLine(nodes).pts, B = smoothLine(horizon).pts;
+    const dist = (p, L) => { let b = Infinity; for (let i = 0; i + 1 < L.length; i++) { const a = L[i], c = L[i + 1], dx = c[0] - a[0], dy = c[1] - a[1], l2 = dx * dx + dy * dy; const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)); b = Math.min(b, Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1])); } return b; };
+    assert.ok(Math.max(...A.map(p => dist(p, B))) < 0.5);
+    // and a long straight stays straight until close to the bend
+    assert.ok(A.filter(p => p[0] < -20).every(p => Math.abs(p[1]) < 1e-9));
   });
 });

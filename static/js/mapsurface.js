@@ -437,6 +437,7 @@ function offsetPolyVar(pts, ds, sign) {
 }
 
 const SMOOTH_STEP = 3;          // m: the most a smoothed road's points lie apart
+const EASE_M = 15;              // m: how far along a long straight the curve through its end nodes may ease
 const SMOOTH_MAX_TURN = 35 * Math.PI / 180;    // a node turning more than this stays a corner (a junction turn, a street corner): OSM
                                                // draws a curve as many small turns
 
@@ -448,14 +449,38 @@ const SMOOTH_MAX_TURN = 35 * Math.PI / 180;    // a node turning more than this 
  * it goes on in another way, so the two ways leave their shared node along the same tangent and their edges meet.
  * Returns { pts, index } where index[i] is node i's place in pts.
  */
-export function smoothLine(nodes, corners = null, before = null, after = null) {
+export function smoothLine(nodes, corners = null, before = null, after = null, plain = null) {
   if (before || after) {
     const ext = [...(before ? [before] : []), ...nodes, ...(after ? [after] : [])], o = before ? 1 : 0;
     const shifted = corners ? new Set([...corners].map(i => i + o)) : null;
-    const r = smoothLine(ext, shifted);
+    // the segments either side of a join keep the curve spread along them: both ways draw the same curve there only
+    // when their points fall alike, and the join is where their edge lines must meet
+    const plain = new Set([...(before ? [0, 1] : []), ...(after ? [ext.length - 2, ext.length - 3] : [])]);
+    const r = smoothLine(ext, shifted, null, null, plain);
     const index = r.index.slice(o, o + nodes.length);
     return { pts: r.pts.slice(index[0], index[index.length - 1] + 1), index: index.map(i => i - index[0]) };
   }
+  if (nodes.length < 3) return smoothNodes(nodes, corners);
+  // a long straight between nodes stays straight but for EASE_M at each end: the bend is made at the node, as the road
+  // has it, rather than spread down the whole straight (which would put the curve where the roads around it, drawn
+  // from other points of the same road, are not)
+  const ext = [], real = [];
+  for (let i = 0; i < nodes.length; i++) {
+    real.push(ext.length);
+    ext.push(nodes[i]);
+    if (i === nodes.length - 1) continue;
+    const a = nodes[i], b = nodes[i + 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (L > 2 * EASE_M + SMOOTH_STEP && !(plain && plain.has(i))) {
+      const f = EASE_M / L;
+      ext.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f], [b[0] - (b[0] - a[0]) * f, b[1] - (b[1] - a[1]) * f]);
+    }
+  }
+  if (ext.length === nodes.length) return smoothNodes(nodes, corners);
+  const r = smoothNodes(ext, corners ? new Set([...corners].map(i => real[i])) : null);
+  return { pts: r.pts, index: real.map(i => r.index[i]) };
+}
+
+function smoothNodes(nodes, corners) {
   const n = nodes.length, pts = [], index = [];
   if (n < 3) { nodes.forEach((p, i) => { index.push(pts.length); pts.push(p); }); return { pts, index }; }
   const at = (i) => nodes[Math.max(0, Math.min(n - 1, i))];
