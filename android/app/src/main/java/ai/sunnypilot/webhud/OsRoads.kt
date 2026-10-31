@@ -73,7 +73,7 @@ class OsRoads(private val root: File) {
         while (true) {
             if (usage().second >= cap) throw IOException("monthly request cap ($cap) reached")
             val page = try {
-                get(itemsUrl(bbox, offset, filtered), key)
+                get(itemsUrl(bbox, offset, filtered, key))
             } catch (e: HttpException) {
                 // a filter the server won't take: ask for every link and drop the paths here
                 if (e.code == 400 && filtered && offset == 0) { filtered = false; continue } else throw e
@@ -94,20 +94,20 @@ class OsRoads(private val root: File) {
         Log.i(TAG, "OS roads $klat/$klon: ${links.length()} links with a width")
     }
 
-    private fun itemsUrl(bbox: String, offset: Int, filtered: Boolean): String {
-        val q = StringBuilder("$BASE_URL?bbox=$bbox&bbox-crs=${enc(CRS84)}&crs=${enc(CRS84)}&limit=$PAGE&offset=$offset")
+    /** Coordinates come back as lon, lat (CRS84), the API's default. */
+    private fun itemsUrl(bbox: String, offset: Int, filtered: Boolean, key: String): String {
+        val q = StringBuilder("$BASE_URL?key=${enc(key)}&bbox=$bbox&limit=$PAGE&offset=$offset")
         if (filtered) q.append("&filter=").append(enc(FILTER)).append("&filter-lang=cql-text")
         return q.toString()
     }
 
     private class HttpException(val code: Int) : IOException("HTTP $code")
 
-    private fun get(url: String, key: String): JSONObject {
+    private fun get(url: String): JSONObject {
         count()
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = CONNECT_TIMEOUT_MS
         conn.readTimeout = READ_TIMEOUT_MS
-        conn.setRequestProperty("key", key)
         conn.setRequestProperty("Accept", "application/geo+json")
         conn.setRequestProperty("User-Agent", USER_AGENT)
         try {
@@ -144,7 +144,6 @@ class OsRoads(private val root: File) {
         private const val TAG = "WebHud"
         const val FEAT_DEG = MapFeatures.FEAT_DEG
         const val BASE_URL = "https://api.os.uk/features/ngd/ofa/v1/collections/trn-ntwk-roadlink-5/items"
-        private const val CRS84 = "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
         private const val PAGE = 100            // the API's most per request
         private const val MAX_LINKS = 20_000    // a cell's worth in the densest city is well under this
         private const val USAGE = "usage.json"
