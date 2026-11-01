@@ -268,11 +268,20 @@ export function planRoute(layer, car, nav, opts = {}) {
     wis.splice(split - 1, 0, wis[split - 1]);
     if (nStrong > split) nStrong++;
   }
+  // each point's lane (the lane of the step arriving at it): the car's, carried on along the road (onto the next OSM
+  // way of it too, as the nearest lane there: a new way isn't a reason to move over); the turn's lane as it nears;
+  // the kerb's on a road turned onto, and onto and off a roundabout
+  let prevLane = egoLane, prevWi = at.step.wi, turned = false;
   for (let i = 0; i < pts.length; i++) {
     const s = wis[Math.max(0, i - 1)] || at.step;
-    if (turnAt != null && dist[i] > turnAt + 0.01) offs.push(laneOf(s, 'kerb'));
-    else if (turnAt != null && dist[i] > turnAt - TURN_LANE_M) offs.push(laneOf(s, turnSide || 'keep', egoLane));
-    else offs.push(s.wi === at.step.wi ? egoLane : laneOf(s, 'kerb'));
+    const ring = !!g.ways[s.wi].roundabout, wasRing = !!g.ways[prevWi].roundabout;
+    let o;
+    if (turnAt != null && dist[i] > turnAt + 0.01 && !turned) { o = laneOf(s, 'kerb'); turned = true; }
+    else if (s.wi !== prevWi && ring !== wasRing) o = laneOf(s, 'kerb');
+    else if (turnAt != null && dist[i] <= turnAt + 0.01 && dist[i] > turnAt - TURN_LANE_M && turnSide) o = laneOf(s, turnSide);
+    else o = laneOf(s, 'keep', prevLane);
+    offs.push(o);
+    prevLane = o; prevWi = s.wi;
   }
   const sureLen = dist[nStrong - 1];
   return { pts, dist, offsets: offs, sure: sureLen, total: d,
@@ -283,7 +292,7 @@ function segLen(g, s) { const a = g.ways[s.wi].pts[s.i], b = g.ways[s.wi].pts[s.
 
 /** The centre of a lane of a way, m left of its centreline by the direction of travel: 'kerb' (the traffic side's
  *  outer lane), 'left' / 'right' (for a turn: by its turn:lanes when OSM has them, else the lane nearest that side),
- *  else `keep` (m) when it's one of the lanes, else the kerb's. */
+ *  'keep' (the lane nearest `keep`, m), else the kerb's. */
 export function laneOffset(way, forward, leftTraffic, which = 'kerb', keep = null) {
   if (way.singleTrack) return 0;
   const ours = forward ? way.fwd : way.bwd, theirs = forward ? way.bwd : way.fwd;
@@ -299,7 +308,7 @@ export function laneOffset(way, forward, leftTraffic, which = 'kerb', keep = nul
     }
     return which === 'left' ? centers[centers.length - 1] : centers[0];
   }
-  if (which === 'keep' && keep != null && centers.some(c => Math.abs(c - keep) < 0.3)) return keep;
+  if (which === 'keep' && keep != null) return centers.reduce((b, c) => (Math.abs(c - keep) < Math.abs(b - keep) ? c : b));   // the nearest lane
   return kerb;
 }
 
@@ -337,17 +346,31 @@ export function routeLine(route) {
     dense.push([p[0], p[1], cAt[k], cornerAt.has(k)]);
   }
   // each point into its lane
-  const lane = laneAlong(D, O);
+  const lane = laneAlong(D, O, new Set([...corners].map(i => D[i])));
   const moved = [];
   for (let i = 0; i < dense.length; i++) {
     const p = dense[i], o = lane(p[2]);
     const a = dense[Math.max(0, i - 1)], b = dense[Math.min(dense.length - 1, i + 1)];
     let nx, ny;
+    let x, y;
     if (p[3] && i > 0 && i + 1 < dense.length) {
-      const n1 = normal(a, p), n2 = normal(p, b), k = Math.max(0.3, 1 + n1[0] * n2[0] + n1[1] * n2[1]);
-      nx = (n1[0] + n2[0]) / k; ny = (n1[1] + n2[1]) / k;   // the mitre: both legs stay `o` from the centreline
-    } else [nx, ny] = normal(a, b);
-    moved.push({ x: p[0] + nx * o, y: p[1] + ny * o, c: p[2], corner: p[3], tx: b[0] - a[0], ty: b[1] - a[1] });
+      // the mitre: where the two legs, each in its own lane (they may differ, a turn's lane onto the new road's kerb
+      // lane), meet; nearly straight on or nearly back on itself, the legs' mean
+      const n1 = normal(a, p), n2 = normal(p, b), oa = lane(p[2] - CORNER_EASE_M), ob = lane(p[2] + CORNER_EASE_M);
+      const d1 = [p[0] - a[0], p[1] - a[1]], d2 = [b[0] - p[0], b[1] - p[1]], cr = d1[0] * d2[1] - d1[1] * d2[0];
+      const L1 = Math.hypot(...d1) || 1, L2 = Math.hypot(...d2) || 1;
+      if (Math.abs(cr) / (L1 * L2) > 0.2) {
+        const w = [n2[0] * ob - n1[0] * oa, n2[1] * ob - n1[1] * oa], t = (w[0] * d2[1] - w[1] * d2[0]) / cr;
+        x = p[0] + n1[0] * oa + d1[0] * t; y = p[1] + n1[1] * oa + d1[1] * t;
+      } else {
+        const k = Math.max(0.3, 1 + n1[0] * n2[0] + n1[1] * n2[1]);
+        x = p[0] + (n1[0] + n2[0]) / k * o; y = p[1] + (n1[1] + n2[1]) / k * o;
+      }
+    } else {
+      [nx, ny] = normal(a, b);
+      x = p[0] + nx * o; y = p[1] + ny * o;
+    }
+    moved.push({ x, y, c: p[2], corner: p[3], tx: b[0] - a[0], ty: b[1] - a[1] });
   }
   // never backwards: a point behind the last one kept, by the centreline's direction there, is dropped
   const kept = [moved[0]];
@@ -358,6 +381,8 @@ export function routeLine(route) {
   }
   let pts = roundCorners(kept);
   pts = smoothPts(pts, SMOOTH_PASSES);
+  // no two points nearly on top of each other (their direction, and so the ribbon's edges there, would be anyhow)
+  pts = pts.filter((p, i) => i === 0 || i === pts.length - 1 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > MIN_GAP_M);
   const along = [];
   let m = 0, sure = null;
   for (let i = 0; i < pts.length; i++) {
@@ -371,16 +396,21 @@ export function routeLine(route) {
 const STEP_M = 1.5;          // the drawn line's points are about this far apart
 const CORNER_M = 9;          // a corner is rounded over this much of each leg (less where the legs are short)
 const SMOOTH_PASSES = 4;     // passes of neighbour averaging over the whole line: irons out kinks a few metres long
+const CORNER_EASE_M = 2;     // a change of lane at a corner (onto the new road's lane) is made within the corner's curve
+const MIN_GAP_M = 0.4;
 
 /** The lane (m left of travel) at c m along the route: each point's lane holds from the point before it, and a
- *  change is eased over LANE_EASE_M centred on where it happens, so the line never steps sideways. */
-function laneAlong(D, O) {
+ *  change is eased over LANE_EASE_M centred on where it happens, so the line never steps sideways (at a corner, over
+ *  CORNER_EASE_M: the corner's curve takes the line from one leg's lane to the other's). */
+function laneAlong(D, O, cornerAt = new Set()) {
   const changes = [];
-  for (let i = 1; i < O.length; i++) if (Math.abs(O[i] - O[i - 1]) > 0.01) changes.push([D[i - 1], O[i] - O[i - 1]]);
+  for (let i = 1; i < O.length; i++) {
+    if (Math.abs(O[i] - O[i - 1]) > 0.01) changes.push([D[i - 1], O[i] - O[i - 1], cornerAt.has(D[i - 1]) ? CORNER_EASE_M : LANE_EASE_M]);
+  }
   return (c) => {
     let o = O[0];
-    for (const [at, by] of changes) {
-      const t = Math.max(0, Math.min(1, (c - at + LANE_EASE_M / 2) / LANE_EASE_M));
+    for (const [at, by, over] of changes) {
+      const t = Math.max(0, Math.min(1, (c - at + over / 2) / over));
       o += by * t * t * (3 - 2 * t);
     }
     return o;

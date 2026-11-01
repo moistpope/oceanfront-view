@@ -1517,7 +1517,7 @@ export class CarScene {
     this.cutaway.update(dt, this.clock);
     this._driveModel();
     this.groundStyle.update();   // after the objects and the car have moved
-    this.navArrow.update(toScene, this.clock);
+    this.navArrow.update(toScene, this.clock, this.route.mesh.visible);
     // the drum eases in and out, and flattens while the car controls frame the car
     const k = this.drumOn && !this.studio && !this.cutaway.awake ? 1 / DRUM_R : 0;
     this.drumK += (k - this.drumK) * (1 - Math.exp(-dt * 3));

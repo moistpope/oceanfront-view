@@ -115,11 +115,33 @@ describe('navroute', () => {
     assert.ok(Math.abs(line.pts[0][1] - 1.75) < 0.3, `starts in the car's lane: ${line.pts[0]}`);
     const before = line.pts.find(p => p[0] > 95 && p[0] < 100);
     assert.ok(before && Math.abs(before[1] - 5.25) < 0.4, `in the left lane before the turn: ${before}`);
+    // no S on the new road: in its kerb lane (1.75 m left of its centreline, which runs from x 121 to 122 here) once past the curve
+    for (const p of line.pts.filter(p => p[1] > 14 && p[1] < 58)) {
+      const cx = 121 + (p[1] - 4) / 56;
+      assert.ok(Math.abs(p[0] - (cx - 1.75)) < 0.35, `in Horse Guards Avenue's lane: ${p}`);
+    }
     // the lane change is gradual: sideways no more than 1 m per 3 m travelled
     for (let i = 1; i < line.pts.length && line.pts[i][0] < 100; i++) {
       const a = line.pts[i - 1], b = line.pts[i];
       assert.ok(Math.abs(b[1] - a[1]) <= Math.abs(b[0] - a[0]) / 3 + 0.05, `a gentle lane change at ${a}`);
     }
+  });
+
+  test("the car's lane carries on along its road, onto the road's next OSM way too", () => {
+    const layer = { ways: [
+      way(1, 'Strand', [[-50, 0], [0, 0], [80, 0]], { fwd: 2, bwd: 2, lanes: 4 }),
+      way(5, 'Strand', [[80, 0], [160, 3], [300, 3]], { fwd: 2, bwd: 2, lanes: 4 }),   // the next way of the same road
+      way(2, 'Side Road', [[300, 3], [300, 200]]),
+    ] };
+    const r = planRoute(layer, car, nav('Turn left onto Side Road', 300), { wayId: 1, leftTraffic: true, egoOffset: 1.75 });
+    const line = routeLine(r);
+    const before = line.pts.filter(p => p[0] > 2 && p[0] < 200);
+    // still the inner lane (1.75 m left of the centreline), not moved to the kerb's at the way's end
+    for (const p of before) {
+      const cy = p[0] < 80 ? 0 : p[0] < 160 ? (p[0] - 80) * 3 / 80 : 3;
+      assert.ok(Math.abs(p[1] - cy - 1.75) < 0.4, `kept the car's lane: ${p}`);
+    }
+    assert.equal(smoothness(line).backwards, 0);
   });
 
   test('the drawn line is smooth round a roundabout and out of it', () => {

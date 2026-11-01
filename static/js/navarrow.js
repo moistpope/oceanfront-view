@@ -62,11 +62,13 @@ export class NavArrow {
     this.mesh.geometry = geo;
   }
 
-  // place it on the road as it is now; road.place(s, d): s m ahead, d m left of the ego lane's center
-  update(toScene, clock) {
+  // place it on the road as it is now; road.place(s, d): s m ahead, d m left of the ego lane's center. routeShown:
+  // the route is drawn on the map's roads (routeview.js), which shows the turn already: the arrow would be a second
+  // violet path beside it, so it's left out
+  update(toScene, clock, routeShown = false) {
     const t = this.turn, road = this.road;
     const ahead = t ? t.at - road.odo : Infinity;
-    const show = ahead < SHOW_M && ahead > -PAST_M;
+    const show = !routeShown && ahead < SHOW_M && ahead > -PAST_M;
     this.group.visible = show;
     if (!show) return;
     const p = road.place(Math.max(0, ahead), 0);
