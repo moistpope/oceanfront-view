@@ -86,6 +86,56 @@ describe('navroute', () => {
     assert.ok(Math.abs(end[0] - 198.25) < 0.5, `the left lane of Side Road going north: ${end}`);
   });
 
+  // the drawn line never folds, steps sideways or kinks: each step goes forward and the heading turns gently
+  const smoothness = (line) => {
+    const P = line.pts;
+    let maxTurn = 0, backwards = 0, maxStep = 0;
+    for (let i = 1; i + 1 < P.length; i++) {
+      const h1 = Math.atan2(P[i][1] - P[i - 1][1], P[i][0] - P[i - 1][0]), h2 = Math.atan2(P[i + 1][1] - P[i][1], P[i + 1][0] - P[i][0]);
+      let d = Math.abs(h2 - h1); if (d > Math.PI) d = 2 * Math.PI - d;
+      if (d > Math.PI / 2) backwards++;
+      maxTurn = Math.max(maxTurn, d);
+    }
+    for (let i = 1; i < P.length; i++) maxStep = Math.max(maxStep, Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+    return { maxTurnDeg: maxTurn * 180 / Math.PI, backwards, maxStep };
+  };
+
+  test('the drawn line is smooth: a left turn from the inside lane of a wide road, and a lane change', () => {
+    // a wide road (2 lanes each way): the left turn's lane is 5.25 m left of the centreline, nearly the corner's radius
+    const layer = { ways: [
+      way(1, 'Whitehall', [[-50, 0], [0, 0], [120, 0], [300, 0]], { fwd: 2, bwd: 2, lanes: 4 }),
+      way(2, 'Horse Guards Avenue', [[120, 0], [121, 4], [122, 60], [125, 200]]),
+    ] };
+    // the car in the right-hand lane of its side (1.75 m left): moves to the left lane before the turn
+    const r = planRoute(layer, car, nav('Turn left onto Horse Guards Avenue', 120), { wayId: 1, leftTraffic: true, egoOffset: 1.75 });
+    const line = routeLine(r), q = smoothness(line);
+    assert.equal(q.backwards, 0, 'never doubles back');
+    assert.ok(q.maxTurnDeg < 12, `no kinks: the sharpest step turns ${q.maxTurnDeg.toFixed(1)} deg`);
+    assert.ok(q.maxStep < 3, `points close enough to bend smoothly: ${q.maxStep}`);
+    assert.ok(Math.abs(line.pts[0][1] - 1.75) < 0.3, `starts in the car's lane: ${line.pts[0]}`);
+    const before = line.pts.find(p => p[0] > 95 && p[0] < 100);
+    assert.ok(before && Math.abs(before[1] - 5.25) < 0.4, `in the left lane before the turn: ${before}`);
+    // the lane change is gradual: sideways no more than 1 m per 3 m travelled
+    for (let i = 1; i < line.pts.length && line.pts[i][0] < 100; i++) {
+      const a = line.pts[i - 1], b = line.pts[i];
+      assert.ok(Math.abs(b[1] - a[1]) <= Math.abs(b[0] - a[0]) / 3 + 0.05, `a gentle lane change at ${a}`);
+    }
+  });
+
+  test('the drawn line is smooth round a roundabout and out of it', () => {
+    const ring = way(10, '', [[100, 0], [114, 6], [120, 20], [114, 34], [100, 40], [86, 34], [80, 20], [86, 6], [100, 0]], { oneWay: true, roundabout: true, fwd: 2, bwd: 0, lanes: 2 });
+    const layer = { ways: [
+      way(1, 'A Road', [[-50, 0], [0, 0], [100, 0]], { fwd: 2, bwd: 2, lanes: 4 }),
+      ring,
+      way(2, 'East Rd', [[120, 20], [300, 20]]),
+      way(3, 'North Rd', [[100, 40], [100, 300]]),
+    ] };
+    const r = planRoute(layer, car, nav('At the roundabout, take the 2nd exit onto North Rd', 100), { wayId: 1, leftTraffic: false, egoOffset: -1.75 });
+    const q = smoothness(routeLine(r));
+    assert.equal(q.backwards, 0);
+    assert.ok(q.maxTurnDeg < 15, `no kinks: ${q.maxTurnDeg.toFixed(1)} deg`);
+  });
+
   test('no road under the car: no route', () => {
     assert.equal(planRoute({ ways: [way(1, 'A', [[0, 100], [100, 100]])] }, car, null), null);
   });

@@ -19,7 +19,6 @@ const MAX_M = 2000;               // never further than this from the car (the l
 const SLACK_M = 60;               // a turn this much beyond the step's rounding still counts
 const LANE_EASE_M = 30;           // a lane change in the drawn route takes this long
 const TURN_LANE_M = 70;           // the route moves to the turn's lane this far before it
-const FILLET_M = 6;               // turns at junctions are rounded to about this radius
 const CONTINUE_DEG = 50;          // a road carries on through a junction within this angle
 const MINOR = new Set(['service', 'track', 'parking_aisle', 'driveway', 'living_street_service']);
 
@@ -259,6 +258,16 @@ export function planRoute(layer, car, nav, opts = {}) {
     if (step >= 0.05) { pts.push([s.to.x, s.to.y]); d += step; dist.push(d); wis.push(s); }
     if (k === strong.length - 1) nStrong = pts.length;
   });
+  // a point where the move to the turn's lane starts, so the drawn line changes lane there and not a whole road early
+  const laneAt = turnAt != null ? turnAt - TURN_LANE_M : null;
+  const split = laneAt != null && laneAt > 0 ? dist.findIndex((d, i) => i > 0 && dist[i - 1] < laneAt - 1 && d > laneAt + 1) : -1;
+  if (split > 0) {
+    const a = pts[split - 1], b = pts[split], f = (laneAt - dist[split - 1]) / (dist[split] - dist[split - 1]);
+    pts.splice(split, 0, [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+    dist.splice(split, 0, laneAt);
+    wis.splice(split - 1, 0, wis[split - 1]);
+    if (nStrong > split) nStrong++;
+  }
   for (let i = 0; i < pts.length; i++) {
     const s = wis[Math.max(0, i - 1)] || at.step;
     if (turnAt != null && dist[i] > turnAt + 0.01) offs.push(laneOf(s, 'kerb'));
@@ -266,7 +275,7 @@ export function planRoute(layer, car, nav, opts = {}) {
     else offs.push(s.wi === at.step.wi ? egoLane : laneOf(s, 'kerb'));
   }
   const sureLen = dist[nStrong - 1];
-  return { pts, dist, offsets: easeOffsets(dist, offs), sure: sureLen, total: d,
+  return { pts, dist, offsets: offs, sure: sureLen, total: d,
     turn: turnNode ? { x: turnNode.x, y: turnNode.y } : null, corners: turnAt != null ? [turnStepIdx] : [] };
 }
 
@@ -294,72 +303,137 @@ export function laneOffset(way, forward, leftTraffic, which = 'kerb', keep = nul
   return kerb;
 }
 
-/** Offsets that step between lanes eased over LANE_EASE_M (by distance along). */
-function easeOffsets(dist, offs) {
-  const out = offs.slice();
-  for (let i = 1; i < offs.length; i++) {
-    if (Math.abs(offs[i] - offs[i - 1]) < 0.01) continue;
-    // a change at i: ease from i's start back over LANE_EASE_M
-    const from = out[i - 1], to = offs[i], d1 = dist[i - 1];
-    for (let k = i - 1; k >= 0 && d1 - dist[k] < LANE_EASE_M; k--) out[k] = from + (to - from) * (1 - (d1 - dist[k]) / LANE_EASE_M) * 0.5;
-    out[i - 1] = (from + to) / 2;
-  }
-  return out;
-}
-
 /**
- * The route drawn: a smooth line through its points (smoothLine, rounded at its turns), each point moved into its
- * lane, with how far along it is and how sure: { pts: [[x, y]], along: [m], sure: m } (strength beyond `sure` is
- * the likely part's).
+ * The route drawn: { pts: [[x, y]], along: [m], sure: m, total: m } (strength beyond `sure` is the likely part's).
+ * Built in this order so it can't fold over itself: the centreline smoothed as the network draws its roads (corners
+ * kept sharp), cut into short steps; each point moved into its lane (lane changes eased over LANE_EASE_M, sharp
+ * corners mitred so both legs keep their lane); any point that would take the line backwards dropped (the inside of a
+ * tight bend, where the lane is further from the centreline than the bend is round); then the corners rounded to
+ * CORNER_M and the whole line smoothed, so a kink left anywhere doesn't show.
  */
 export function routeLine(route) {
   if (!route || route.pts.length < 2) return null;
-  const P = route.pts;
-  // round the corners (any bend over 20 deg at a node) to about FILLET_M; smooth the rest as the network does
+  const P = route.pts, O = route.offsets, D = route.dist;
   const corners = new Set();
   for (let i = 1; i + 1 < P.length; i++) {
     const h1 = Math.atan2(P[i][1] - P[i - 1][1], P[i][0] - P[i - 1][0]), h2 = Math.atan2(P[i + 1][1] - P[i][1], P[i + 1][0] - P[i][0]);
     if (Math.abs(angDiff(h1, h2)) > 20 * DEG) corners.add(i);
   }
   const sm = smoothLine(P, corners);
-  let pts = sm.pts;
-  // the offset of each smoothed point: interpolated from the route's points' by index
-  const offs = new Array(pts.length).fill(0);
+  // the smoothed line in short steps: [x, y, c (m along the route's own points), corner?]
+  const cAt = new Array(sm.pts.length).fill(0);
   for (let i = 0; i + 1 < P.length; i++) {
     const a = sm.index[i], b = sm.index[i + 1];
-    for (let k = a; k <= b; k++) offs[k] = route.offsets[i] + (route.offsets[i + 1] - route.offsets[i]) * (b > a ? (k - a) / (b - a) : 0);
+    for (let k = a; k <= b; k++) cAt[k] = D[i] + (D[i + 1] - D[i]) * (b > a ? (k - a) / (b - a) : 0);
   }
-  const cornerIdx = new Set([...corners].map(i => sm.index[i]));
-  ({ pts } = fillet(pts, offs, cornerIdx));
-  const out = [], along = [];
-  let m = 0;
+  const cornerAt = new Set([...corners].map(i => sm.index[i]));
+  const dense = [];
+  for (let k = 0; k < sm.pts.length; k++) {
+    const p = sm.pts[k];
+    if (k) {
+      const q = sm.pts[k - 1], n = Math.ceil(Math.hypot(p[0] - q[0], p[1] - q[1]) / STEP_M);
+      for (let j = 1; j < n; j++) dense.push([q[0] + (p[0] - q[0]) * j / n, q[1] + (p[1] - q[1]) * j / n, cAt[k - 1] + (cAt[k] - cAt[k - 1]) * j / n, false]);
+    }
+    dense.push([p[0], p[1], cAt[k], cornerAt.has(k)]);
+  }
+  // each point into its lane
+  const lane = laneAlong(D, O);
+  const moved = [];
+  for (let i = 0; i < dense.length; i++) {
+    const p = dense[i], o = lane(p[2]);
+    const a = dense[Math.max(0, i - 1)], b = dense[Math.min(dense.length - 1, i + 1)];
+    let nx, ny;
+    if (p[3] && i > 0 && i + 1 < dense.length) {
+      const n1 = normal(a, p), n2 = normal(p, b), k = Math.max(0.3, 1 + n1[0] * n2[0] + n1[1] * n2[1]);
+      nx = (n1[0] + n2[0]) / k; ny = (n1[1] + n2[1]) / k;   // the mitre: both legs stay `o` from the centreline
+    } else [nx, ny] = normal(a, b);
+    moved.push({ x: p[0] + nx * o, y: p[1] + ny * o, c: p[2], corner: p[3], tx: b[0] - a[0], ty: b[1] - a[1] });
+  }
+  // never backwards: a point behind the last one kept, by the centreline's direction there, is dropped
+  const kept = [moved[0]];
+  for (let i = 1; i < moved.length; i++) {
+    const m = moved[i], last = kept[kept.length - 1];
+    if ((m.x - last.x) * m.tx + (m.y - last.y) * m.ty > 0.05 * Math.hypot(m.tx, m.ty)) kept.push(m);
+    else if (m.corner) last.corner = true;   // the corner's point fell inside the bend: round from the last one kept
+  }
+  let pts = roundCorners(kept);
+  pts = smoothPts(pts, SMOOTH_PASSES);
+  const along = [];
+  let m = 0, sure = null;
   for (let i = 0; i < pts.length; i++) {
-    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
-    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
-    const o = pts[i][2];
-    out.push([pts[i][0] - dy / L * o, pts[i][1] + dx / L * o]);
     if (i) m += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
     along.push(m);
+    if (sure == null && pts[i][2] >= route.sure) sure = m;
   }
-  // `sure` measured on the smoothed line: scale by the ratio of lengths
-  const sure = route.total > 0 ? route.sure * (m / route.total) : m;
-  return { pts: out, along, sure: Math.min(sure, m), total: m };
+  return { pts: pts.map(p => [p[0], p[1]]), along, sure: sure == null ? m : sure, total: m };
 }
 
-/** Round each corner: the points within FILLET_M either side replaced by a quadratic curve. Points carry their offset as [x, y, o]. */
-function fillet(pts, offs, corners) {
-  const out = [];
-  for (let i = 0; i < pts.length; i++) {
-    if (!corners.has(i) || i === 0 || i === pts.length - 1) { out.push([pts[i][0], pts[i][1], offs[i]]); continue; }
-    const p = pts[i], a = pts[i - 1], b = pts[i + 1];
-    const la = Math.hypot(p[0] - a[0], p[1] - a[1]), lb = Math.hypot(b[0] - p[0], b[1] - p[1]);
-    const r = Math.min(FILLET_M, la * 0.5, lb * 0.5);
-    if (r < 0.5) { out.push([p[0], p[1], offs[i]]); continue; }
-    const s = [p[0] + (a[0] - p[0]) * r / la, p[1] + (a[1] - p[1]) * r / la], e = [p[0] + (b[0] - p[0]) * r / lb, p[1] + (b[1] - p[1]) * r / lb];
-    for (let k = 0; k <= 6; k++) {
-      const t = k / 6, u = 1 - t;
-      out.push([u * u * s[0] + 2 * u * t * p[0] + t * t * e[0], u * u * s[1] + 2 * u * t * p[1] + t * t * e[1], offs[i - 1] + (offs[i + 1] - offs[i - 1]) * t]);
+const STEP_M = 1.5;          // the drawn line's points are about this far apart
+const CORNER_M = 9;          // a corner is rounded over this much of each leg (less where the legs are short)
+const SMOOTH_PASSES = 4;     // passes of neighbour averaging over the whole line: irons out kinks a few metres long
+
+/** The lane (m left of travel) at c m along the route: each point's lane holds from the point before it, and a
+ *  change is eased over LANE_EASE_M centred on where it happens, so the line never steps sideways. */
+function laneAlong(D, O) {
+  const changes = [];
+  for (let i = 1; i < O.length; i++) if (Math.abs(O[i] - O[i - 1]) > 0.01) changes.push([D[i - 1], O[i] - O[i - 1]]);
+  return (c) => {
+    let o = O[0];
+    for (const [at, by] of changes) {
+      const t = Math.max(0, Math.min(1, (c - at + LANE_EASE_M / 2) / LANE_EASE_M));
+      o += by * t * t * (3 - 2 * t);
     }
+    return o;
+  };
+}
+
+function normal(a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+  return [-dy / L, dx / L];
+}
+
+/** Each corner rounded: the line from CORNER_M before it to CORNER_M after (less where a leg is shorter, or another
+ *  corner is near) replaced by a curve through the corner's tangents. Returns [[x, y, c]]. */
+function roundCorners(kept) {
+  const n = kept.length, cum = [0];
+  for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(kept[i].x - kept[i - 1].x, kept[i].y - kept[i - 1].y));
+  const cornerIdx = [];
+  for (let i = 1; i + 1 < n; i++) if (kept[i].corner) cornerIdx.push(i);
+  const pointAt = (s) => {   // the point s m along the kept line
+    let i = 1;
+    while (i < n - 1 && cum[i] < s) i++;
+    const f = cum[i] > cum[i - 1] ? (s - cum[i - 1]) / (cum[i] - cum[i - 1]) : 0, a = kept[i - 1], b = kept[i];
+    return [a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.c + (b.c - a.c) * f];
+  };
+  const out = [];
+  let from = 0;   // the next stretch of the kept line to copy starts here (m)
+  cornerIdx.forEach((ci, j) => {
+    const prev = j ? cum[cornerIdx[j - 1]] : 0, next = j + 1 < cornerIdx.length ? cum[cornerIdx[j + 1]] : cum[n - 1];
+    const d = Math.min(CORNER_M, (cum[ci] - prev) / 2, (next - cum[ci]) / 2);
+    if (d < 0.5) return;
+    const s0 = cum[ci] - d, s1 = cum[ci] + d;
+    for (let i = 0; i < n && cum[i] < s0; i++) if (cum[i] >= from) out.push([kept[i].x, kept[i].y, kept[i].c]);
+    const s = pointAt(s0), e = pointAt(s1), p = [kept[ci].x, kept[ci].y], steps = Math.max(4, Math.ceil(2 * d / STEP_M));
+    for (let k = 0; k <= steps; k++) {
+      const t = k / steps, u = 1 - t;
+      out.push([u * u * s[0] + 2 * u * t * p[0] + t * t * e[0], u * u * s[1] + 2 * u * t * p[1] + t * t * e[1], s[2] + (e[2] - s[2]) * t]);
+    }
+    from = s1 + 1e-6;
+  });
+  for (let i = 0; i < n; i++) if (cum[i] >= from) out.push([kept[i].x, kept[i].y, kept[i].c]);
+  return out;
+}
+
+/** Neighbour averaging (the ends stay put): each pass moves every point halfway to the midpoint of its neighbours. */
+function smoothPts(pts, passes) {
+  let cur = pts;
+  for (let k = 0; k < passes; k++) {
+    const next = cur.map(p => p.slice());
+    for (let i = 1; i + 1 < cur.length; i++) {
+      next[i][0] = cur[i][0] * 0.5 + (cur[i - 1][0] + cur[i + 1][0]) * 0.25;
+      next[i][1] = cur[i][1] * 0.5 + (cur[i - 1][1] + cur[i + 1][1]) * 0.25;
+    }
+    cur = next;
   }
-  return { pts: out };
+  return cur;
 }
