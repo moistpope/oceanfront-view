@@ -249,20 +249,29 @@ export class Settings {
         [756, 'Switzerland'], [208, 'Denmark'], [578, 'Norway'], [752, 'Sweden']];
       const country = Number(p.FiskerCountryCode) || 0;
       if (!countries.some(([c]) => c === country)) countries.push([country, `Code ${country}`]);
+      const manual = [
+        el('div.row', el('div.lbl', el('b', 'Sign units'), el('small', 'Follow dash uses the cluster\'s mph / km/h setting.')),
+          this.app.segmented([['0', 'Follow dash'], ['1', 'mph'], ['2', 'km/h'], ['3', 'Head unit']], String(p.FiskerSpeedLimitUnit ?? 0),
+            v => put({ FiskerSpeedLimitUnit: Number(v) }))),
+        el('div.row', el('div.lbl', el('b', 'Traffic side'), el('small', 'The side of the road the car drives on.')),
+          this.app.segmented([['0', 'Head unit'], ['1', 'Left'], ['2', 'Right']], String(p.FiskerTrafficSide ?? 0),
+            v => put({ FiskerTrafficSide: Number(v) }))),
+        el('div.row', el('div.lbl', el('b', 'Country'), el('small', 'The country the ADAS reads signs for.')),
+          el('select', { onchange: (e) => put({ FiskerCountryCode: Number(e.target.value) }) },
+            countries.map(([c, n]) => el('option', { value: c, selected: c === country }, n)))),
+      ];
+      // a comma that works these out from its GPS (FiskerAdasAuto): the manual ones are only the fallback
+      const hasAuto = typeof p.FiskerAdasAuto === 'boolean', auto = hasAuto && p.FiskerAdasAuto;
+      const autoRow = hasAuto && el('div.row', el('div.lbl', el('b', 'Auto from GPS'),
+        el('small', auto ? (p.FiskerAdasAutoCountry ? `Set for ${p.FiskerAdasAutoCountry} at the last car start.` : 'Waiting for the comma\'s first GPS fix.')
+          : 'Units, side and country follow the country the car is in.')),
+        this.app.switch(auto, v => put({ FiskerAdasAuto: v })));
       body.append(el('div.section',
         el('h3', 'Speed-limit signs (ADAS)'),
         el('p.desc', 'What the comma tells the ADAS about where the car is, for the signs its camera reads and auto speed. ' +
-          'Applied at the next car start. In the UK: Follow dash (or mph), Left, United Kingdom.'),
-        el('div.rows',
-          el('div.row', el('div.lbl', el('b', 'Sign units'), el('small', 'Follow dash uses the cluster\'s mph / km/h setting.')),
-            this.app.segmented([['0', 'Follow dash'], ['1', 'mph'], ['2', 'km/h'], ['3', 'Head unit']], String(p.FiskerSpeedLimitUnit ?? 0),
-              v => put({ FiskerSpeedLimitUnit: Number(v) }))),
-          el('div.row', el('div.lbl', el('b', 'Traffic side'), el('small', 'The side of the road the car drives on.')),
-            this.app.segmented([['0', 'Head unit'], ['1', 'Left'], ['2', 'Right']], String(p.FiskerTrafficSide ?? 0),
-              v => put({ FiskerTrafficSide: Number(v) }))),
-          el('div.row', el('div.lbl', el('b', 'Country'), el('small', 'The country the ADAS reads signs for.')),
-            el('select', { onchange: (e) => put({ FiskerCountryCode: Number(e.target.value) }) },
-              countries.map(([c, n]) => el('option', { value: c, selected: c === country }, n)))))));
+          'Applied at the next car start.' + (hasAuto ? '' : ' In the UK: Follow dash (or mph), Left, United Kingdom.')),
+        el('div.rows', autoRow, ...(auto ? [] : manual)),
+        auto ? el('details', el('summary', 'Used before the first GPS fix'), el('div.rows', ...manual)) : null));
     }
     body.append(el('div.section', el('div.rows',
       el('div.row', el('div.lbl', el('b', 'Experimental mode'), el('small', 'End-to-end longitudinal from the driving model.')),
