@@ -205,13 +205,10 @@ object CanBridge {
                 synchronized(busSeen) { busSeen[parts[0]] = System.currentTimeMillis() }
             }
             if (!loggedFirst) { loggedFirst = true; Log.i(TAG, "CAN frames flowing (first: ${f.getString("bus")} ${parts[1]})") }
-            if (bus == "IBUS1" && parts[1] == PerfPlan.READY_ADDR) PerfBoost.onReadyFrame(parts[2])
             batch.add(f)
-            // coalesce: flush at ~15 Hz so a burst of changes is one page event; in Ready at full speed
-            // (PerfBoost), once a screen frame
+            // coalesce: flush at ~15 Hz so a burst of changes is one page event
             val now = System.currentTimeMillis()
-            val since = now - lastFlush
-            if (since >= FLUSH_MS || (since >= FAST_FLUSH_MS && PerfBoost.fast) || batch.size >= 200) {
+            if (now - lastFlush >= 66 || batch.size >= 200) {
                 flush(batch)
                 batch.clear()
                 lastFlush = now
