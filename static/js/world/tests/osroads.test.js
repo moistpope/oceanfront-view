@@ -180,4 +180,18 @@ describe('road surfaces', () => {
     assert.ok(a.pave.idx.length >= 6 + 3 * 6, String(a.pave.idx.length));   // the pavement's quad, the ring around the hole
     assert.equal(roadArrays({ ways: [], features: [] }, true, false).pave.idx.length, 0);
   });
+
+  test("OSM's edge lines are left off where OS has surveyed the road", async () => {
+    const { offSurfaces } = await import('../../roadnetgeom.js');
+    const surf = [{ kind: 'R', rings: [[[-50, -4], [50, -4], [50, 4], [-50, 4]]] }, { kind: 'P', rings: [[[-50, 4], [50, 4], [50, 7], [-50, 7]]] }];
+    const layer = { cx: 0, cy: 0, r: 320 };
+    // inside the carriageway, on the pavement, a metre past the kerb: all OS's road
+    for (const y of [2.5, 5, 7.8]) assert.equal(offSurfaces([[[-40, y], [40, y]]], surf, layer).length, 0, String(y));
+    // well clear of OS's surfaces: kept whole
+    assert.equal(offSurfaces([[[-40, 20], [40, 20]]], surf, layer).length, 1);
+    // running out of the surveyed stretch: only the part beyond it stays
+    const [part, ...rest] = offSurfaces([[[0, 2], [120, 2]]], surf, layer);
+    assert.equal(rest.length, 0);
+    assert.ok(part[0][0] > 50 && part[0][0] < 55 && part[part.length - 1][0] === 120, JSON.stringify(part[0]));
+  });
 });
