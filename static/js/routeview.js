@@ -6,11 +6,11 @@ import * as THREE from '../vendor/three.module.min.js';
 import { planRoute, routeLine } from './navroute.js';
 import { NET_LINE_LIFT } from './mapsurface.js';
 
-const HALF_W = 1.5;          // m: the ribbon's half width (its glow; the bright core is about half that)
+const HALF_W = 1.7;          // m: the ribbon's half width (its glow; the bright core is about half that)
 const LIFT = NET_LINE_LIFT + 0.004;
 const REBUILD_M = 4, REBUILD_S = 0.5;   // rebuilt when the car has moved this far, or this long has passed
 const FADE_S = 0.6;
-const COLORS = { light: 0x7446f0, dark: 0x9b7dff };
+const COLORS = { light: 0x9a4cf5, dark: 0xb48cff };
 
 const toWorld = (x, y) => [-y, LIFT, -x];   // pose frame -> the world group's axes (as roadnetgeom.js)
 
@@ -41,7 +41,7 @@ void main() {
   float strength = mix(1.0, uFaint * (1.0 - past), smoothstep(uSure - 6.0, uSure + 6.0, vAlong));
   strength *= smoothstep(1.0, 9.0, vAlong) * (1.0 - smoothstep(uTotal - 8.0, uTotal, vAlong));
   float pulse = 0.86 + 0.14 * sin((vAlong - uTime * 9.0) * 0.21);
-  float alpha = (core * 0.62 + glow * 0.38) * strength * pulse * uOpacity;
+  float alpha = (core * 0.5 + glow * 0.36) * strength * pulse * uOpacity;
   gl_FragColor = vec4(mix(uColor, vec3(1.0), core * uLift), alpha);
   #include <fog_fragment>
 }`;
