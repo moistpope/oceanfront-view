@@ -194,4 +194,38 @@ describe('road surfaces', () => {
     assert.equal(rest.length, 0);
     assert.ok(part[0][0] > 50 && part[0][0] < 55 && part[part.length - 1][0] === 120, JSON.stringify(part[0]));
   });
+
+  test("a road on OS's carriageway is drawn in its middle at its width, its lines shared out across it", async () => {
+    const { surfaceGrid } = await import('../../ossurfgrid.js');
+    const { fitToSurfaces, roadNetwork } = await import('../../mapsurface.js');
+    // an 8 m carriageway along y = 0 with pavements, widening to 30 m (a junction mouth) for x in 0..20
+    const surf = [
+      { kind: 'R', rings: [[[-100, -4], [100, -4], [100, 4], [-100, 4]]] },
+      { kind: 'R', rings: [[[0, -4], [20, -4], [20, -26], [0, -26]]] },
+      { kind: 'P', rings: [[[-100, 4], [100, 4], [100, 7], [-100, 7]]] },
+    ];
+    const grid = surfaceGrid(surf, { cx: 0, cy: 0, r: 320 });
+    assert.equal(grid.kind(0, 0), 1); assert.equal(grid.kind(0, 5), 2); assert.equal(grid.kind(0, 10), 0);
+    // OSM's line 1.5 m off the middle, at 2 x 3.6 m
+    const pts = []; for (let x = -90; x <= 90; x += 3) pts.push([x, 1.5]);
+    const fit = fitToSurfaces(pts, 3.6, grid);
+    assert.ok(fit);
+    for (let i = 0; i < pts.length; i++) {
+      assert.ok(Math.abs(fit.pts[i][1]) < 0.6, `${pts[i][0]}: ${fit.pts[i][1]}`);
+      assert.ok(Math.abs(fit.hs[i] - 4) < 0.6, `${pts[i][0]}: ${fit.hs[i]}`);
+    }
+    // off OS's survey: left alone
+    assert.equal(fitToSurfaces(pts.map(([x, y]) => [x, y + 100]), 3.6, grid), null);
+    // the network: the center line in the middle, the strip kerb to kerb
+    const way = { id: 1, pts, width: 7.2, laneW: 3.6, lanes: 2, oneWay: false, fwd: 1, bwd: 1, centre: 0, detailed: false, className: 'unclassified' };
+    const net = roadNetwork({ ways: [way] }, true, false, grid);
+    const ys = net.centers.flat().filter(p => Math.abs(p[0]) < 80).map(p => p[1]);
+    assert.ok(ys.length && ys.every(y => Math.abs(y) < 0.6), JSON.stringify(ys.slice(0, 5)));
+    const { left: L, right: R } = net.strips[0];
+    const mid = L.findIndex(p => Math.abs(p[0] + 50) < 2);
+    assert.ok(Math.abs(L[mid][1] - R[mid][1]) > 7 && Math.abs(L[mid][1] - R[mid][1]) < 9, `${L[mid][1]} ${R[mid][1]}`);
+    // without OS: where OSM has it
+    const plain = roadNetwork({ ways: [way] }, true, false);
+    assert.ok(plain.centers.flat().every(p => Math.abs(p[1] - 1.5) < 0.01));
+  });
 });

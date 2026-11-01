@@ -3,6 +3,7 @@
 // roadnetworker.js can build them off the page's thread (a town's network takes tens of ms on the head unit).
 import { roadNetwork, NET_LINE_LIFT } from './mapsurface.js';
 import earcut from './earcut.js';
+import { surfaceGrid } from './ossurfgrid.js';
 
 const DASH = 3.0, GAP = 9.0;   // the network's lane dashes (world-fixed, so laid out once)
 const CENTER_DASH = 4.0, CENTER_GAP = 5.0;   // a single (UK / European) center line's: longer than a lane line's
@@ -13,7 +14,9 @@ const STRIP_LIFT = -0.004;
 
 /** The meshes for `layer` (the worker's roads layer), by material: strip, pave, edge, center, centerSingle, arrow, lane. */
 export function roadArrays(layer, leftTraffic, usLines) {
-  const net = roadNetwork(layer, leftTraffic, usLines);
+  const surf = layer && layer.surfaces && layer.surfaces.length ? layer.surfaces : [];
+  const grid = surf.length ? surfaceGrid(surf, layer) : null;
+  const net = roadNetwork(layer, leftTraffic, usLines, grid);
   const single = net.centerStyle === 'single', centerDashes = [];
   if (single) { for (const l of net.centers) centerDashes.push(...dashed(l, CENTER_DASH, CENTER_GAP)); centerDashes.push(...net.solids); }
   const dashes = [];
@@ -21,11 +24,10 @@ export function roadArrays(layer, leftTraffic, usLines) {
   // Ordnance Survey's surveyed surfaces (Great Britain, with that map data on): the carriageway joins the strips, filling
   // the junction mouths and widenings the strips don't have; pavements and central reservations are drawn over the
   // strips and their lines, so the road shows only where it really is
-  const surf = layer.surfaces || [];
   const road = polygonsGeometry(surf.filter(p => p.kind === 'R'), STRIP_LIFT);
   // where OS has surveyed the road, its kerbs are the pavements' edges: OSM's edge lines, laid at a width worked out
   // from the lane count, would run down the middle of a junction mouth or a widening, or a metre off the kerb
-  const edges = surf.length ? offSurfaces(net.edges, surf, layer) : net.edges;
+  const edges = grid ? offSurfaces(net.edges, surf, layer, grid) : net.edges;
   return {
     strip: concat(stripsGeometry(net.strips, STRIP_LIFT), road),
     pave: polygonsGeometry(surf.filter(p => p.kind !== 'R'), NET_LINE_LIFT + 0.002),
@@ -37,19 +39,17 @@ export function roadArrays(layer, leftTraffic, usLines) {
   };
 }
 
-const SURF_CELL = 1;    // m: the grid OS's surfaces are rasterised on to test lines against
-const SURF_NEAR = 2;    // cells: a line point this close to an OS surface is on OS's road
+const SURF_NEAR = 2;    // m: a line point this close to an OS surface is on OS's road
 const SURF_STEP = 1;    // m: lines are tested this often along
 
 /** The parts of `lines` that don't lie on or by OS's surfaces (any kind): where OS hasn't surveyed the road. */
-export function offSurfaces(lines, surf, layer) {
-  const grid = surfaceGrid(surf, layer);
+export function offSurfaces(lines, surf, layer, grid = surfaceGrid(surf, layer)) {
   if (!grid) return lines;
   const out = [];
   for (const pts of lines) {
     let cur = null;
     const visit = (p) => {
-      if (grid.near(p[0], p[1])) { if (cur && cur.length >= 2) out.push(cur); cur = null; }
+      if (grid.near(p[0], p[1], SURF_NEAR)) { if (cur && cur.length >= 2) out.push(cur); cur = null; }
       else { if (!cur) cur = []; cur.push(p); }
     };
     for (let i = 0; i < pts.length; i++) {
@@ -62,46 +62,6 @@ export function offSurfaces(lines, surf, layer) {
     if (cur && cur.length >= 2) out.push(cur);
   }
   return out;
-}
-
-/** OS's surfaces as an occupancy grid over the layer's box, grown by SURF_NEAR cells: { near(x, y) }. */
-function surfaceGrid(surf, layer) {
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const { rings } of surf) for (const [x, y] of rings[0] || []) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
-  if (layer && layer.r > 0) {   // no bigger than the layer's box (and a margin): a far polygon mustn't make a huge grid
-    x0 = Math.max(x0, layer.cx - layer.r - 50); y0 = Math.max(y0, layer.cy - layer.r - 50);
-    x1 = Math.min(x1, layer.cx + layer.r + 50); y1 = Math.min(y1, layer.cy + layer.r + 50);
-  }
-  if (!(x1 > x0 && y1 > y0)) return null;
-  const nx = Math.ceil((x1 - x0) / SURF_CELL) + 1, ny = Math.ceil((y1 - y0) / SURF_CELL) + 1;
-  if (nx * ny > 4e6) return null;
-  const g = new Uint8Array(nx * ny);
-  // each polygon filled at its cells' centers, even-odd across its rings (holes stay empty)
-  for (const { rings } of surf) {
-    let ry0 = Infinity, ry1 = -Infinity;
-    for (const [, y] of rings[0] || []) { ry0 = Math.min(ry0, y); ry1 = Math.max(ry1, y); }
-    const j0 = Math.max(0, Math.ceil((ry0 - y0) / SURF_CELL - 0.5)), j1 = Math.min(ny - 1, Math.floor((ry1 - y0) / SURF_CELL - 0.5));
-    for (let j = j0; j <= j1; j++) {
-      const yc = y0 + (j + 0.5) * SURF_CELL, xs = [];
-      for (const ring of rings) for (let a = 0, b = ring.length - 1; a < ring.length; b = a++) {
-        const [xa, ya] = ring[a], [xb, yb] = ring[b];
-        if ((ya > yc) !== (yb > yc)) xs.push(xa + (yc - ya) * (xb - xa) / (yb - ya));
-      }
-      xs.sort((p, q) => p - q);
-      for (let k = 0; k + 1 < xs.length; k += 2) {
-        const i0 = Math.max(0, Math.ceil((xs[k] - x0) / SURF_CELL - 0.5)), i1 = Math.min(nx - 1, Math.floor((xs[k + 1] - x0) / SURF_CELL - 0.5));
-        for (let i = i0; i <= i1; i++) g[j * nx + i] = 1;
-      }
-    }
-  }
-  return {
-    near(x, y) {
-      const ci = Math.floor((x - x0) / SURF_CELL), cj = Math.floor((y - y0) / SURF_CELL);
-      for (let j = Math.max(0, cj - SURF_NEAR); j <= Math.min(ny - 1, cj + SURF_NEAR); j++)
-        for (let i = Math.max(0, ci - SURF_NEAR); i <= Math.min(nx - 1, ci + SURF_NEAR); i++) if (g[j * nx + i]) return true;
-      return false;
-    },
-  };
 }
 
 // pose frame (x east, y north) -> world-group axes (X = -y, Z = -x), like the world objects

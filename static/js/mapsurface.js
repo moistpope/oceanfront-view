@@ -442,6 +442,70 @@ function offsetPolyVar(pts, ds, sign) {
   });
 }
 
+import { ROAD } from './ossurfgrid.js';
+
+// Ordnance Survey's carriageway (ossurfgrid.js), where it has surveyed the road: the road is measured across, kerb to
+// kerb, all along, and drawn in the middle of what OS has at the width OS has, its lines shared out across that
+const FIT_STEP = 0.25;        // m: the march out to a kerb
+const FIT_MIN_W = 2.5;        // m: narrower than this across isn't the carriageway (a pinch in the survey)
+const FIT_REACH = 1.8;        // the farthest a kerb is looked for, in the road's own (OSM) half widths, and
+const FIT_REACH_MIN = 6;      // m at the least: past it there's no kerb (a junction mouth, a lay-by)
+const FIT_SMOOTH_M = 8;       // m either side a measurement is averaged over
+const FIT_SHARE = 0.4;        // of a way's points that must measure, or it keeps OSM's place and width
+const FIT_SHIFT_MAX = 4;      // m: OSM's line is never moved further than this
+
+/** A way's line and half widths fitted to OS's carriageway: { pts, hs } (pts moved sideways onto the middle of the
+ *  road, hs its half width there), or null where OS hasn't surveyed it (too few points measure). */
+export function fitToSurfaces(pts, h, grid) {
+  const n = pts.length;
+  if (!grid || n < 2) return null;
+  const reach = Math.max(FIT_REACH_MIN, FIT_REACH * h);
+  const st = cumulative(pts), c = new Array(n).fill(null), w = new Array(n).fill(null);
+  const kerb = (p, nv, sign, from) => {   // how far out (from `from`) the carriageway goes on that side, or null
+    for (let d = from; d <= reach; d += FIT_STEP) if (grid.kind(p[0] + nv[0] * d * sign, p[1] + nv[1] * d * sign) !== ROAD) return d;
+    return null;
+  };
+  let got = 0;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i], nv = left(norm(sub(pts[Math.min(n - 1, i + 1)], pts[Math.max(0, i - 1)])));
+    // OSM's line may lie off the carriageway (on the pavement, a metre or two out): start from the nearest road cell across
+    let o = null;
+    for (let d = 0; d <= FIT_SHIFT_MAX && o == null; d += FIT_STEP) {
+      if (grid.kind(p[0] + nv[0] * d, p[1] + nv[1] * d) === ROAD) o = d;
+      else if (grid.kind(p[0] - nv[0] * d, p[1] - nv[1] * d) === ROAD) o = -d;
+    }
+    if (o == null) continue;
+    const q = [p[0] + nv[0] * o, p[1] + nv[1] * o];
+    const dl = kerb(q, nv, 1, 0), dr = kerb(q, nv, -1, 0);
+    if (dl == null || dr == null || dl + dr < FIT_MIN_W) continue;
+    const mid = o + (dl - dr) / 2;
+    if (Math.abs(mid) > FIT_SHIFT_MAX) continue;
+    c[i] = mid; w[i] = (dl + dr) / 2; got++;
+  }
+  if (got < Math.max(2, FIT_SHARE * n)) return null;
+  // the gaps (junction mouths, the ends) bridged from the measurements either side, then smoothed along the road
+  const fill = (a) => {
+    const idx = []; a.forEach((v, i) => { if (v != null) idx.push(i); });
+    const out = a.slice();
+    for (let i = 0; i < n; i++) {
+      if (out[i] != null) continue;
+      let k = 0; while (k < idx.length && idx[k] < i) k++;
+      const b = idx[k - 1], f = idx[k];
+      if (b == null) out[i] = a[f]; else if (f == null) out[i] = a[b];
+      else out[i] = a[b] + (a[f] - a[b]) * (st[i] - st[b]) / (st[f] - st[b] || 1);
+    }
+    return out;
+  };
+  const smooth = (a) => a.map((_, i) => {
+    let sum = 0, wt = 0;
+    for (let j = i; j >= 0 && st[i] - st[j] <= FIT_SMOOTH_M; j--) { sum += a[j]; wt++; }
+    for (let j = i + 1; j < n && st[j] - st[i] <= FIT_SMOOTH_M; j++) { sum += a[j]; wt++; }
+    return sum / wt;
+  });
+  const cs = smooth(fill(c)), hs = smooth(fill(w));
+  return { pts: offsetPolyVar(pts, cs, 1), hs };
+}
+
 const SMOOTH_STEP = 3;          // m: the most a smoothed road's points lie apart
 const EASE_M = 15;              // m: how far along a long straight the curve through its end nodes may ease
 const SMOOTH_MAX_TURN = 35 * Math.PI / 180;    // a node turning more than this stays a corner (a junction turn, a street corner): OSM
@@ -787,7 +851,7 @@ function outside(intervals, L) {
   return out;
 }
 
-export function roadNetwork(layer, leftTraffic = false, usLines = !leftTraffic) {
+export function roadNetwork(layer, leftTraffic = false, usLines = !leftTraffic, grid = null) {
   const out = { strips: [], edges: [], centers: [], solids: [], yellowDashed: [], centerStyle: usLines ? 'double' : 'single', lanes: [], arrows: [] };
   if (!layer || !layer.ways) return out;
   const key = (p) => p[0] + ',' + p[1];
@@ -844,16 +908,21 @@ export function roadNetwork(layer, leftTraffic = false, usLines = !leftTraffic) 
   };
   ways.forEach((w, wi) => {
     const h = w.width / 2;
-    const first = continuesInto(w, 0), last = continuesInto(w, w.pts.length - 1);
+    // on OS's carriageway: in its middle at its width (the lines shared out across it), else OSM's line and width
+    const fit = w.singleTrack ? null : fitToSurfaces(w.pts, h, grid);
+    const first = fit ? null : continuesInto(w, 0), last = fit ? null : continuesInto(w, w.pts.length - 1);
     const tFirst = first && first.width < w.width, tLast = last && last.width < w.width;
     // the taper needs a vertex where it ends: put one TAPER_M in from a tapered end
-    let pts = w.pts;
+    let pts = fit ? fit.pts : w.pts;
     if (tFirst) pts = insertAt(pts, TAPER_M);
     if (tLast) pts = insertAt(pts, cumulative(pts)[pts.length - 1] - TAPER_M);
     const st = cumulative(pts), L = st[st.length - 1];
-    const hs = new Array(pts.length).fill(h);
+    const hs = fit ? fit.hs.slice() : new Array(pts.length).fill(h);
     if (tFirst) { const h0 = first.width / 2; for (let i = 0; i < pts.length; i++) hs[i] = Math.min(hs[i], h0 + (h - h0) * Math.min(1, st[i] / TAPER_M)); }
     if (tLast) { const h1 = last.width / 2; for (let i = 0; i < pts.length; i++) hs[i] = Math.min(hs[i], h1 + (h - h1) * Math.min(1, (L - st[i]) / TAPER_M)); }
+    // a line across the road at a share of its half width (-1 the right edge, +1 the left): fitted, it follows the
+    // measured width; else OSM's constant one (the lines don't taper with the strip)
+    const across = (f) => fit ? offsetPolyVar(pts, hs.map(x => x * f), 1) : offsetPoly(pts, f * h);
     const left_ = offsetPolyVar(pts, hs, 1), right_ = offsetPolyVar(pts, hs, -1);
     out.strips.push({ left: left_, right: right_ });
     const inner = [], edgeCuts = { 1: [], '-1': [] };
@@ -921,9 +990,10 @@ export function roadNetwork(layer, leftTraffic = false, usLines = !leftTraffic) 
     // the center line along the way, clear of junctions: in the UK, solid both sides through a bend too tight to see
     // round at the road's speed (where OSM doesn't say otherwise)
     const bends = uk && pass.fwd && pass.bwd && w.passFwd == null && w.passBwd == null ? blindBends(pts, st, w) : [];
-    const centerRun = (d) => {
-      for (const piece of cutByStations(pts, st, inner.concat(bends))) centerLine(piece, d);
-      if (bends.length) for (const piece of cutByStations(pts, st, inner.concat(outside(bends, st[st.length - 1])))) double(piece, d, false, false);
+    const centerRun = (f) => {
+      const line = across(f);
+      for (const piece of cutByStations(line, st, inner.concat(bends))) centerLine(piece, 0);
+      if (bends.length) for (const piece of cutByStations(line, st, inner.concat(outside(bends, st[st.length - 1])))) double(piece, 0, false, false);
     };
     if (w.markings === false || w.singleTrack) {
       // OSM says no lane markings (lane_markings=no), or one lane both ways share: only its edges
@@ -931,14 +1001,14 @@ export function roadNetwork(layer, leftTraffic = false, usLines = !leftTraffic) 
       // OSM says how many lanes go each way (roaddetail.js): from the right edge, the lanes driving with the way's nodes
       // (against them where traffic keeps left), the shared center lane, the rest; center lines either side of the shared part
       const R = leftTraffic ? w.bwd : w.fwd, C = w.centre || 0, n = w.fwd + w.bwd + C;
-      const centerAt = (d) => { if (!C) { centerRun(d); return; } for (const piece of cutByStations(pts, st, inner)) out.centers.push(offsetPoly(piece, d)); };
-      centerAt(-h + R * W);
-      if (C) centerAt(-h + (R + C) * W);
-      for (let k = 1; k < n; k++) if (k !== R && k !== R + C) out.lanes.push(...cutByStations(offsetPoly(pts, -h + k * W), st, inner));
+      const centerAt = (f) => { if (!C) { centerRun(f); return; } out.centers.push(...cutByStations(across(f), st, inner)); };
+      centerAt(-1 + 2 * R / n);
+      if (C) centerAt(-1 + 2 * (R + C) / n);
+      for (let k = 1; k < n; k++) if (k !== R && k !== R + C) out.lanes.push(...cutByStations(across(-1 + 2 * k / n), st, inner));
     } else if (!w.oneWay) {
       centerRun(0);
     } else {
-      for (let k = 1; k < w.lanes; k++) out.lanes.push(...cutByStations(offsetPoly(pts, -h + k * W), st, inner));
+      for (let k = 1; k < w.lanes; k++) out.lanes.push(...cutByStations(across(-1 + 2 * k / w.lanes), st, inner));
     }
     // the turn arrows OSM gives (turn:lanes), in each lane approaching a junction at the way's end
     const junctionAt = (atEnd) => { const i = atEnd ? w.pts.length - 1 : 0, here = nodes.get(key(w.pts[i])); return !!here && here.length >= 2 && continuesInto(w, i) === null; };
@@ -946,6 +1016,8 @@ export function roadNetwork(layer, leftTraffic = false, usLines = !leftTraffic) 
     for (const [dir, turns] of [[1, w.turnsFwd], [-1, w.turnsBwd]]) {
       if (!turns || !turns.length || !junctionAt(dir > 0)) continue;
       // lane i's center (i = 0 the driver's leftmost), m left of the way's line looking along its nodes
+      // (on OS's carriageway, at the road's measured width where the arrow is)
+      let h = w.width / 2, W = w.laneW || LANE_W;
       const center = (i) => dir > 0
         ? (leftTraffic || w.oneWay ? h : -h + fwd * W) - (i + 0.5) * W
         : (leftTraffic ? -h : h - bwd * W) + (i + 0.5) * W;
@@ -953,6 +1025,11 @@ export function roadNetwork(layer, leftTraffic = false, usLines = !leftTraffic) 
         const tip = dir > 0 ? L - back : back, tail = tip - dir * ARROW_LEN * ARROW_SCALE;
         if (tail < 0 || tail > L || L < back + ARROW_LEN + 5) continue;
         const [P, t] = pointAt(pts, st, tail), ux = mul(t, dir), nWay = left(t), vx = left(ux);
+        if (fit) {
+          let j = 1; while (j < st.length - 1 && st[j] < tail) j++;
+          const f = st[j] > st[j - 1] ? (tail - st[j - 1]) / (st[j] - st[j - 1]) : 0;
+          h = hs[j - 1] + (hs[j] - hs[j - 1]) * f; W = 2 * h / w.lanes;
+        }
         // sized to the lane: a bent arrow reaches ARROW_REACH m to the side at full size, kept ARROW_CLEAR m inside the lane
         const k = clamp((W / 2 - ARROW_CLEAR) / ARROW_REACH, 0.4, ARROW_SCALE);
         turns.forEach((lane, i) => {
