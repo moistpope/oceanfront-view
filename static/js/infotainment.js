@@ -206,6 +206,7 @@ export class Infotainment {
     const n = this.nav, on = !!n && this.app.settings.showNav !== false;
     setClass(this.navCard, 'hidden', !on);
     const arrow = this.app.scene.navArrow;
+    this.app.scene.setNav?.(on ? n.parsed : null);
     if (!on) { arrow.set(null); this.layout(); return; }
     const p = n.parsed;
     setText(this.navDist, p.dist ? p.dist.value : '');

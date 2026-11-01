@@ -1,4 +1,4 @@
-// The next turn on the road: once it's near, an arrow lies on the ego lane at the turn, bending the way
+// The next turn on the road (violet, as the route is: routeview.js): once it's near, an arrow lies on the ego lane at the turn, bending the way
 // the turn goes (a ring at the destination). The nav app gives the distance rounded (0.3 mi is anywhere
 // from 0.25 to 0.35), so the turn is pinned to the road (road.js odo) when it's first given and carried
 // along with the car from there; each later distance only nudges it back inside what that distance
@@ -17,7 +17,7 @@ export class NavArrow {
     this.road = road;   // road.js RoadModel
     this.group = new THREE.Group();
     this.group.name = 'navarrow';
-    this.material = new THREE.MeshBasicMaterial({ color: 0x3e6ae1, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
+    this.material = new THREE.MeshBasicMaterial({ color: 0x7446f0, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
     this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
     this.mesh.renderOrder = 2;

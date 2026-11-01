@@ -359,6 +359,15 @@ stale, and two signs for one limit confuse). So the car is placed on the map, an
 the roads around it and what stands along them are there whether or not the matcher has an opinion about
 them.
 
+The nav app's route is drawn on the map's roads in violet (`navroute.js`, `routeview.js`), apart from openpilot's
+blue path and the comma's green planner. Google Maps gives other apps only its next step (the turn-by-turn
+notification, `infotainment.js parseNav`), so the route is worked out from that on the roads layer: the road ahead
+is followed to the junction about the step's distance on where a road of the step's name (or, without one, a road the
+way it turns) leaves, round a roundabout to the nth exit; past the turn, the new road is drawn bright until the first
+junction the route could leave at (driveways and car parks don't count), then faint for 250 m, until the next step.
+The ribbon runs in a lane: the car's, the turn's as it nears (OSM's turn:lanes when there are some), then the kerb
+side lane. The next-turn arrow (`navarrow.js`) is the same violet.
+
 The country the car is in is looked up from its position (`region.js`, in `borders_data.js`: Natural Earth's 1:50m
 borders through world-atlas, built by `tools/make_borders.py`), remembered across starts, and switched only after
 30 s in a new one so a fix near a border doesn't flip the units. The settings' Auto follows it (`regional.js`): the

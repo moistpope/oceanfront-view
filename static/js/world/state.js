@@ -314,7 +314,7 @@ export class StateBuilder {
         width: r1(width), singleTrack: single, laneW: Math.round(L.laneW * 100) / 100, fwd: L.ours, bwd: L.theirs, centre: L.centre, detailed: L.detailed,
         turnsFwd: L.turns, turnsBwd: way.oneWay ? null : B.turns,
         passFwd: way.detail ? way.detail.passFwd : null, passBwd: way.detail ? way.detail.passBwd : null,
-        markings: way.detail ? way.detail.markings : null, pts });
+        markings: way.detail ? way.detail.markings : null, roundabout: !!(way.detail && way.detail.roundabout), pts });
     }
     mergeCopies(ways);
     const features = this._features(x, y, R, near);

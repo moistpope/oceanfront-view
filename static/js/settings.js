@@ -385,7 +385,8 @@ export class Settings {
       ['showTracks', 'Power trails', 'Glowing particle trails behind the rear tires, colored by how hard the motors pull (blue light, through the spectrum to red at full power); longer the faster you go.'],
       ['autoView', 'Auto view', 'Switch to the top view while parking and back when driving.'],
       ['showMusic', 'Music', 'What the head unit is playing, in a card at the bottom with its controls. Needs the HUD\'s Android app on the car\'s screen.'],
-      ['showNav', 'Navigation', 'The next turn from the head unit\'s navigation, in a card at the top and as an arrow on the road once it\'s near. ' +
+      ['showNav', 'Navigation', 'The next turn from the head unit\'s navigation, in a card at the top and as an arrow on the road once it\'s near, ' +
+        'and the route on the map in violet: bright as far as it can be told from the next turn, fainter where it is only likely. ' +
         'Needs the HUD\'s Android app on the car\'s screen.'],
     ]));
   }
