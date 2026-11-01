@@ -10,6 +10,7 @@ const HALF_W = 1.7;          // m: the ribbon's half width (its glow; the bright
 const LIFT = NET_LINE_LIFT + 0.004;
 const REBUILD_M = 4, REBUILD_S = 0.5;   // rebuilt when the car has moved this far, or this long has passed
 const FADE_S = 0.6;
+const PAST_M = 200;          // drawn this far past the step (the road taken, till the nav app's next step)
 const COLORS = { light: 0x9a4cf5, dark: 0xb48cff };
 
 const toWorld = (x, y) => [-y, LIFT, -x];   // pose frame -> the world group's axes (as roadnetgeom.js)
@@ -92,7 +93,7 @@ export class RouteView {
 
   /**
    * Each frame. map: the snapshot's map (its roads layer and way); pose: the car in the layer's frame; ref: the
-   * lane placement (mapsurface.js mapReference: its laneCenter, m left of our road's centreline); odo: the road's
+   * lane placement (mapsurface.js mapReference: its centerY0, the drawn centreline's y at the car); odo: the road's
    * odometer; show: the map is drawn and the setting is on.
    */
   update({ map, pose, ref, odo, leftTraffic, show, clock, dt }) {
@@ -112,11 +113,12 @@ export class RouteView {
     if (b && b.layer === layer.version && b.key === n.key && b.left === leftTraffic && clock - b.t < REBUILD_S &&
       Math.hypot(pose.x - b.x, pose.y - b.y) < REBUILD_M && (rem == null || Math.abs(rem - b.rem) < REBUILD_M)) return;
     this.built = { x: pose.x, y: pose.y, t: clock, layer: layer.version, key: n.key, rem, left: leftTraffic };
-    // the route stops being drawn once the step is behind us (the nav app's next one is due)
-    if (rem != null && rem < -30) { this.line = null; return; }
+    // past the step the road taken is drawn (navroute.js), until the nav app's next step or PAST_M on
+    if (rem != null && rem < -PAST_M) { this.line = null; return; }
     const route = planRoute(layer, { x: pose.x, y: pose.y, h: pose.h },
       { maneuver: n.maneuver, street: n.street, instruction: n.instruction, remaining: rem, half: n.half },
-      { wayId: map.way ? map.way.id : null, egoOffset: ref && ref.laneCenter != null ? ref.laneCenter : null, leftTraffic });
+      // from where the car is drawn on the map (the lane placement may still be sliding to its lane)
+      { wayId: map.way ? map.way.id : null, egoOffset: ref && ref.centerY0 != null ? -ref.centerY0 : null, leftTraffic });
     this.line = routeLine(route);
     this._geometry();
   }

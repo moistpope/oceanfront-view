@@ -13,6 +13,7 @@
 import { laneCenters, smoothLine } from './mapsurface.js';
 
 const KEY = (p) => p[0] + ',' + p[1];
+const SNAP_M = 1.5;               // way ends this close are the same junction
 const DEG = Math.PI / 180;
 export const FAINT_M = 250;       // the likely part past the first junction the route could leave at
 const MAX_M = 2000;               // never further than this from the car (the layer is ~320 m around it anyway)
@@ -53,13 +54,31 @@ export function exitNumber(text) {
 export function buildGraph(layer) {
   const ways = (layer && layer.ways || []).filter(w => w.pts && w.pts.length >= 2);
   const nodes = new Map();
-  const node = (p) => { const k = KEY(p); let n = nodes.get(k); if (!n) nodes.set(k, n = { k, x: p[0], y: p[1], out: [] }); return n; };
+  // ways from different map tiles meet at points a little apart (each tile's own rounding): within SNAP_M they're one
+  const grid = new Map(), cell = (x, y) => Math.round(x / SNAP_M) + ',' + Math.round(y / SNAP_M);
+  const node = (p) => {
+    const k = KEY(p);
+    let n = nodes.get(k);
+    if (n) return n;
+    const cx = Math.round(p[0] / SNAP_M), cy = Math.round(p[1] / SNAP_M);
+    for (let dx = -1; dx <= 1 && !n; dx++) for (let dy = -1; dy <= 1 && !n; dy++) {
+      for (const m of grid.get((cx + dx) + ',' + (cy + dy)) || []) if (Math.hypot(m.x - p[0], m.y - p[1]) < SNAP_M) { n = m; break; }
+    }
+    if (!n) {
+      n = { k, x: p[0], y: p[1], out: [] };
+      const c = cell(p[0], p[1]);
+      if (!grid.has(c)) grid.set(c, []);
+      grid.get(c).push(n);
+    }
+    nodes.set(k, n);
+    return n;
+  };
   ways.forEach((w, wi) => {
     for (let i = 0; i + 1 < w.pts.length; i++) {
       const a = node(w.pts[i]), b = node(w.pts[i + 1]);
       if (a === b) continue;
-      a.out.push({ wi, i, j: i + 1, to: b });
-      if (!w.oneWay) b.out.push({ wi, i: i + 1, j: i, to: a });
+      a.out.push({ wi, i, j: i + 1, to: b, from: a });
+      if (!w.oneWay) b.out.push({ wi, i: i + 1, j: i, to: a, from: b });
     }
   });
   return { ways, nodes };
@@ -72,7 +91,7 @@ const angDiff = (a, b) => { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI;
 function options(g, nodeK, from) {
   const n = g.nodes.get(nodeK);
   if (!n) return [];
-  const prev = from ? g.nodes.get(KEY(g.ways[from.wi].pts[from.i])) : null;
+  const prev = from ? from.from : null;
   const hIn = prev ? heading(prev, n) : null;
   const out = [];
   for (const s of n.out) {
@@ -99,9 +118,11 @@ function carryOn(g, opts, from) {
   return near[0];
 }
 
-/** Whether a junction offers the route another way than `keep` (driveways and car parks don't count). */
+/** Whether a junction offers the route another way than `keep` (driveways, car parks and doubling back onto a dual
+ *  carriageway's other side don't count). */
 function canLeave(g, opts, keep) {
-  return opts.some(o => o !== keep && !MINOR.has(g.ways[o.step.wi].className) && !(g.ways[o.step.wi].roundabout && keep && g.ways[keep.step.wi].roundabout));
+  return opts.some(o => o !== keep && !MINOR.has(g.ways[o.step.wi].className) && Math.abs(o.turn) < 150 * DEG &&
+    !(g.ways[o.step.wi].roundabout && keep && g.ways[keep.step.wi].roundabout));
 }
 
 /** Follow the road from a step on: [{step, at (m to its end), node}] until `limit` m or it can't tell. With
@@ -110,7 +131,7 @@ function walk(g, first, startM, limit, stopAtLeave) {
   const steps = [];
   let s = first, m = startM, left = null;
   for (let guard = 0; s && guard < 4000; guard++) {
-    const a = g.nodes.get(KEY(g.ways[s.wi].pts[s.i]));
+    const a = s.from;
     m += Math.hypot(s.to.x - a.x, s.to.y - a.y);
     steps.push({ step: s, at: m, node: s.to });
     if (m >= limit) break;
@@ -165,6 +186,7 @@ function findTurn(g, ahead, nav) {
         : man.kind === 'slight' || man.kind === 'keep' || man.kind === 'ramp' || man.kind === 'merge' ? a < 60
         : man.kind === 'sharp' ? a > 100 : man.kind === 'uturn' ? a > 140 : man.kind === 'straight' ? a < 35 : a > 35 && a < 150;
       const named = names(w, nav.street);
+      if (a > 150 && man.kind !== 'uturn') continue;   // back the way we came (the other carriageway of a named street)
       if (!named && !(side && kindOk)) continue;
       const score = (named ? 4 : 0) + 2 * side + (kindOk ? 1 : 0) - (rem != null ? Math.abs(st.at - rem) / (half + SLACK_M) : 0);
       if (!best || score > best.score) best = { score, k, opt: o };
@@ -210,11 +232,21 @@ export function planRoute(layer, car, nav, opts = {}) {
   const reach = Math.min(MAX_M, rem != null ? rem + (nav.half || 0) + SLACK_M + 5 : MAX_M);
   // (the walk counts each step's whole length: the car is `rest` short of its first step's end)
   const ahead = walk(g, at.step, at.rest - segLen(g, at.step), reach, false);
-  const turn = nav ? findTurn(g, ahead, nav) : null;
+  // past the turn (the step's distance behind us) and on the street it named: the nav app's next step is due, and
+  // till then the road from here is the route, as it was past the turn
+  const kind = nav && nav.maneuver ? nav.maneuver.kind : null;
+  const turned = rem != null && nav.remaining < 0 && kind && kind !== 'straight' && kind !== 'arrive' && names(g.ways[at.step.wi], nav.street);
+  // well past where the turn could be and not on its street: missed (the nav app will reroute)
+  if (rem != null && nav.remaining < -((nav.half || 0) + SLACK_M) && !turned) return null;
+  const turn = nav && !turned ? findTurn(g, ahead, nav) : null;
   const strong = [];   // steps drawn sure, then the likely ones
   let likely = [];
   let turnNode = null, turnStepIdx = -1;
-  if (turn) {
+  if (turned) {
+    const after = walk(g, at.step, at.rest - segLen(g, at.step), MAX_M, true);
+    strong.push(...after.steps.map(s => s.step));
+    if (after.left != null) likely = walk(g, after.steps[after.steps.length - 1].step, 0, FAINT_M, false).steps.slice(1).map(s => s.step);
+  } else if (turn) {
     strong.push(...ahead.steps.slice(0, turn.k + 1).map(s => s.step));
     turnNode = ahead.steps[turn.k].node;
     let next = turn.opt;
@@ -271,12 +303,12 @@ export function planRoute(layer, car, nav, opts = {}) {
   // each point's lane (the lane of the step arriving at it): the car's, carried on along the road (onto the next OSM
   // way of it too, as the nearest lane there: a new way isn't a reason to move over); the turn's lane as it nears;
   // the kerb's on a road turned onto, and onto and off a roundabout
-  let prevLane = egoLane, prevWi = at.step.wi, turned = false;
+  let prevLane = egoLane, prevWi = at.step.wi, turnedOnto = false;
   for (let i = 0; i < pts.length; i++) {
     const s = wis[Math.max(0, i - 1)] || at.step;
     const ring = !!g.ways[s.wi].roundabout, wasRing = !!g.ways[prevWi].roundabout;
     let o;
-    if (turnAt != null && dist[i] > turnAt + 0.01 && !turned) { o = laneOf(s, 'kerb'); turned = true; }
+    if (turnAt != null && dist[i] > turnAt + 0.01 && !turnedOnto) { o = laneOf(s, 'kerb'); turnedOnto = true; }
     else if (s.wi !== prevWi && ring !== wasRing) o = laneOf(s, 'kerb');
     else if (turnAt != null && dist[i] <= turnAt + 0.01 && dist[i] > turnAt - TURN_LANE_M && turnSide) o = laneOf(s, turnSide);
     else o = laneOf(s, 'keep', prevLane);

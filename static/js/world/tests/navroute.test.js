@@ -2,6 +2,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { planRoute, routeLine, streetKey, exitNumber, laneOffset, FAINT_M } from '../../navroute.js';
+import { parseNav } from '../../infotainment.js';
 
 const way = (id, name, pts, extra = {}) => ({ id, name, ref: '', className: 'residential', cls: 5, oneWay: false, fwd: 1, bwd: 1,
   centre: 0, laneW: 3.5, lanes: 2, singleTrack: false, turnsFwd: null, turnsBwd: null, roundabout: false, pts, ...extra });
@@ -16,6 +17,12 @@ const car = { x: 0, y: 0, h: 0 };
 const at = (route, x, y, tol = 2) => route.pts.some(p => Math.hypot(p[0] - x, p[1] - y) < tol);
 
 describe('navroute', () => {
+  test('the street a step names, "The ..." ones too, but not "the fork"', () => {
+    assert.equal(parseNav({ title: '200 yd', text: 'At the roundabout, take the 3rd exit onto The Mall' }).street, 'The Mall');
+    assert.equal(parseNav({ title: '0.3 mi', text: 'Keep left at the fork' }).street, '');
+    assert.equal(parseNav({ title: '50 m', text: 'Turn left at the traffic lights onto Horse Guards Avenue' }).street, 'Horse Guards Avenue');
+  });
+
   test('streets and exits as the nav app writes them', () => {
     assert.equal(streetKey('High St.'), 'high street');
     assert.equal(exitNumber('At the roundabout, take the 2nd exit onto Station Rd'), 2);
@@ -156,6 +163,36 @@ describe('navroute', () => {
     const q = smoothness(routeLine(r));
     assert.equal(q.backwards, 0);
     assert.ok(q.maxTurnDeg < 15, `no kinks: ${q.maxTurnDeg.toFixed(1)} deg`);
+  });
+
+  test('past the turn, on its street: that road on, not back down its other carriageway', () => {
+    // the car has turned left onto Horse Guards Avenue (one-way east), whose other carriageway runs back west from
+    // the junction 30 m on, where Gardens Road leaves
+    const layer = { ways: [
+      way(1, 'Horse Guards Avenue', [[-20, 0], [0, 0], [30, 0]], { oneWay: true, fwd: 1, bwd: 0 }),
+      way(2, 'Horse Guards Avenue', [[30, 0], [60, 0], [300, 0]]),
+      way(3, 'Horse Guards Avenue', [[30, 0], [0, -6], [-20, -6]], { oneWay: true, fwd: 1, bwd: 0 }),
+      way(4, 'Gardens Road', [[60, 0], [60, -200]]),
+    ] };
+    const r = planRoute(layer, car, nav('Turn left onto Horse Guards Avenue', -15), { wayId: 1, leftTraffic: true });
+    assert.ok(r, 'a route');
+    assert.ok(!at(r, -20, -6), 'not back down the other carriageway');
+    assert.ok(Math.abs(r.sure - 60) < 3, `sure to Gardens Road: ${r.sure}`);
+    assert.ok(r.total > 200 && at(r, 300, 0, 60), `likely on: ${r.total}`);
+    // before the turn, a named way back the way the car came isn't the turn either
+    assert.equal(planRoute(layer, car, nav('Turn left onto Horse Guards Avenue', 30), { wayId: 1 }).pts.some(p => p[1] < -3), false);
+    // well past the turn and not on its street: missed
+    const other = { ways: [way(5, 'Other Road', [[-20, 0], [0, 0], [300, 0]])] };
+    assert.equal(planRoute(other, car, nav('Turn left onto Horse Guards Avenue', -120)), null);
+  });
+
+  test('ways from different tiles meet at points a little apart: still a junction', () => {
+    const layer = { ways: [
+      way(1, 'B4077', [[-50, 0], [0, 0], [200, 0], [400, 0]]),
+      way(2, 'Kineton Hill', [[200.4, 0.5], [200, -300]]),   // its end 0.6 m off the B road's node
+    ] };
+    const r = planRoute(layer, car, nav('Turn right onto Kineton Hill', 200), { wayId: 1 });
+    assert.ok(at(r, 200, -300, 5), 'down Kineton Hill');
   });
 
   test('no road under the car: no route', () => {

@@ -55,11 +55,12 @@ export function parseNav(raw) {
 }
 
 // the street an instruction names: after its most telling word ("...take the 2nd exit onto High St"),
-// not a phrase like "the fork" or "the right"
-function streetOf(instruction) {
+// not a phrase like "the fork" or "the right" (but streets called "The ...": The Mall, The Strand)
+const NOT_STREET = /^the\s+(fork|roundabout|right|left|exit|end|ramp|slip|junction|motorway|traffic|lights|next|first|second|third|road|street|destination|\d)/i;
+export function streetOf(instruction) {
   for (const word of ['onto', 'towards?', 'on', 'to', 'at']) {
     const m = new RegExp(`.*\\b${word}\\s+(.+)$`, 'i').exec(instruction);
-    if (m && !/^the\b/i.test(m[1])) return m[1].replace(/[.!]+$/, '');
+    if (m && !NOT_STREET.test(m[1])) return m[1].replace(/[.!]+$/, '');
   }
   return '';
 }
