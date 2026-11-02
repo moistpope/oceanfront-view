@@ -1,11 +1,13 @@
 // Music and navigation from the head unit. What's playing shows in a card at the bottom, with its
-// controls. The next turn shows in a card at the top, and as an arrow on the road ahead (navarrow.js)
+// controls. The next turn shows in a card at the top (unless the ground style is Flat: then floating over the ground with a bar
+// counting down to it), and as an arrow on the road ahead (navarrow.js)
 // once it's near. The Android app (android/, HudListener.kt) reads them from the head unit's media
 // session and its turn-by-turn notification, and sends them as they are (webhud:media, webhud:nav
 // events). They're parsed here, so the parsing can change without reinstalling the app. In a plain
 // browser there's no app and both cards stay hidden. Settings > Display > Debug has a demo of both.
 import { $, el, iconSvg, setClass, setText } from './util.js';
 import { iconManeuverFromUrl } from './navicon.js';
+import * as THREE from '../vendor/three.module.min.js';
 
 const UNIT_M = { mi: 1609.344, mile: 1609.344, miles: 1609.344, ft: 0.3048, feet: 0.3048, foot: 0.3048, yd: 0.9144, yds: 0.9144, yard: 0.9144,
   yards: 0.9144, km: 1000, m: 1, meter: 1, meters: 1 };
@@ -89,6 +91,23 @@ function maneuverSvg(mv) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><g${flip}>${body}</g></svg>`;
 }
 
+// the step in a few words, as the concepts have it: "Turn left", "Keep right", "Exit 7A" (the instruction up to its road)
+function shortStep(p) {
+  const s = (p.instruction || p.street || '').replace(/\s+(?:onto|on to|on|into|towards?|toward|to continue on|to stay on|at|for)\s.*$/i, '').trim();
+  return s.length > 28 ? s.slice(0, 27).trimEnd() + '…' : s;
+}
+
+// a distance in the units the nav app writes (miles and yards, or feet; km and m), rounded as it rounds them
+function fmtDist(m, unit) {
+  const u = (unit || '').toLowerCase();
+  if (/^(mi|mile|miles|yd|yds|yard|yards|ft|feet|foot)$/.test(u)) {
+    if (m >= 0.25 * 1609.344) return `${(m / 1609.344).toFixed(m < 16093 ? 1 : 0)} mi`;
+    return /^(ft|feet|foot)$/.test(u) ? `${Math.round(m / 0.3048 / 50) * 50} ft` : `${Math.round(m / 0.9144 / 10) * 10} yd`;
+  }
+  return m >= 1000 ? `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km` : `${Math.round(m / 10) * 10} m`;
+}
+
+const fmtTime = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
 export class Infotainment {
   constructor(app) {
@@ -199,6 +218,14 @@ export class Infotainment {
     this.navCard = el('section.card.navcard.hidden', { id: 'navcard', 'aria-label': 'Next turn' },
       this.navIcon, el('div.nc-dist', this.navDist, this.navUnit), el('div.nc-text', this.navWhat, this.navTrip));
     $('#app').append(this.navCard);
+    // the floating read-out instead (any ground style but Flat): over the ground beside the car, after the Ocean concepts: the arrow, a bar counting down to the turn, the step in a few words, the distance under it
+    this.tfIcon = el('div.tf-icon');
+    this.tfFill = el('i');
+    this.tfWhat = el('div.tf-what');
+    this.tfDist = el('div.tf-dist');
+    this.turnFloat = el('div.turnfloat.hidden', { 'aria-label': 'Next turn' }, this.tfIcon, el('div.tf-bar', this.tfFill), this.tfWhat, this.tfDist);
+    $('#app').append(this.turnFloat);
+    this.tf = { step: null, start: 0, p: new THREE.Vector3() };
   }
 
   setNav(raw) {
@@ -218,6 +245,7 @@ export class Infotainment {
   _showNav() {
     const n = this.nav, on = !!n && this.app.settings.showNav !== false;
     setClass(this.navCard, 'hidden', !on);
+    setClass(this.turnFloat, 'hidden', !on);
     const arrow = this.app.scene.navArrow;
     this.app.scene.setNav?.(on ? n.parsed : null);
     if (!on) { arrow.set(null); this.layout(); return; }
@@ -234,9 +262,42 @@ export class Infotainment {
       this.navIcon.dataset.key = key;
       if (ours) this.navIcon.innerHTML = maneuverSvg(p.maneuver);
       else this.navIcon.replaceChildren(...(n.raw.icon ? [el('img', { src: n.raw.icon, alt: '' })] : []));
+      this.tfIcon.replaceChildren(...[...this.navIcon.childNodes].map(c => c.cloneNode(true)));
     }
+    setText(this.tfWhat, shortStep(p));
+    if (this.tf.step !== p.instruction) { this.tf.step = p.instruction; this.tf.start = 0; }
     arrow.set(p.maneuver && p.dist ? { ...p.maneuver, m: p.dist.m, half: p.dist.half, step: p.instruction } : null);
     this.layout();
+  }
+
+  // The floating turn, each frame: placed over the ground low beside the car (a point in the car frame projected through
+  // the scene's camera), its bar the share of the distance to the turn still to go, counted from where it was when the
+  // step came. The distance is the nav arrow's own, carried down with the car between notifications. It replaces the
+  // card at the top whenever the ground style is not Flat (the classic look keeps the card).
+  _turnFloat() {
+    const tfEl = this.turnFloat, n = this.nav;
+    const on = !!n && !tfEl.classList.contains('hidden') && this.app.settings.groundStyle !== 'flat';
+    const root = document.documentElement;
+    if (root.classList.contains('tf-on') !== on) { root.classList.toggle('tf-on', on); this.layout(); }
+    if (!on) return;
+    const scene = this.app.scene, p = n.parsed;
+    const turn = scene.navArrow && scene.navArrow.turn;
+    const left = turn && turn.step === p.instruction ? Math.max(0, turn.at - scene.navArrow.road.odo) : p.dist ? p.dist.m : null;
+    if (left != null) {
+      this.tf.start = Math.max(this.tf.start, left, 50);
+      this.tfFill.style.width = `${(100 * left / this.tf.start).toFixed(1)}%`;   // drains to the turn
+    }
+    setText(this.tfDist, left != null ? fmtDist(left, p.dist && p.dist.unit) : '');
+    // low over the ground beside the car, clear of the road ahead, the cars on it and the route: 7 m ahead, 6 m to the
+    // passenger's side (the right, or the left with the driver on the right: html.rhd), 0.4 m up (scene X = -y, Y up, Z = -x)
+    const side = root.classList.contains('rhd') ? -1 : 1;
+    const v = this.tf.p.set(6 * side, 0.4, -7).project(scene.camera);
+    const W = window.innerWidth, H = window.innerHeight;
+    // kept in the screen and above what's along the bottom (the music, replay bar and controls: layout's --bottom-h)
+    const lo = Math.min(120, W / 2), top = 60, bottom = Math.max(top, H - (this._bottomH || 0) - 70);
+    const x = Math.min(W - lo, Math.max(lo, (v.x + 1) / 2 * W)), y = Math.min(bottom, Math.max(top, (1 - v.y) / 2 * H));
+    tfEl.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px) translate(-50%, -50%)`;
+    tfEl.style.visibility = v.z < 1 ? '' : 'hidden';
   }
 
   // ---- layout and per frame ----
@@ -253,11 +314,13 @@ export class Infotainment {
     const top = Math.min(...[btn, this.music, rb].filter(shown).map(e => e.getBoundingClientRect().top));
     const lift = shown(rb) ? btn.getBoundingClientRect().top - rb.getBoundingClientRect().top : 0;
     root.setProperty('--dock-lift', `${Math.max(0, Math.round(lift))}px`);
-    root.setProperty('--bottom-h', `${Math.round(window.innerHeight - top + 8)}px`);
+    this._bottomH = Math.max(0, Math.round(window.innerHeight - top + 8));
+    root.setProperty('--bottom-h', `${this._bottomH}px`);
   }
 
   frame(dt) {
     if (this.demo) this.demo.frame(dt);
+    this._turnFloat();
     this._t = (this._t || 0) + dt;
     if (this._t > 0.25) { this._t = 0; this.tick(); }
   }
