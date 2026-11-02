@@ -262,7 +262,8 @@ export const CATEGORIES = [
       {
         title: 'Blind spot',
         controls: [
-          S('icc.bsd', 'Blind spot (BSD)', ALERT_LEVELS, 2, null, { off: ADAS }),                                           // ICC_BSDSetting
+          // no "+ Vibration": sent that (3), the ADAS turned blind spot detection off for the whole drive (Nov 2 log)
+          S('icc.bsd', 'Blind spot (BSD)', ALERT_LEVELS.slice(0, 3), 2, null, { off: ADAS }),                               // ICC_BSDSetting
           S('icc.bsdSens', 'Timing', SENSITIVITY, 0, null, { off: ADAS }),                                                  // ICC_BSD_Sensitivity
           S('icc.dow', 'Door open warning (DOW)', [[0, 'Off'], [1, 'Visual'], [2, '+ Sound']], 2, null, { off: ADAS }),     // ICC_DOW_Setting
         ],
