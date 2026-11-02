@@ -241,6 +241,25 @@ export class Settings {
       body.append(el('div.section', el('h3', 'Fisker ACC'),
         el('p.desc', 'The ACC defaults require an updated comma WebHUD server.')));
     }
+    if (p.FiskerOverrideTorque != null && Number.isFinite(Number(p.FiskerOverrideTorque))) {
+      // how hard the driver must turn the wheel (held 100 ms) for openpilot to let go of the steering; live while driving.
+      // 1.5..6.4 in tenths, then 6.5: openpilot no longer yields on torque and the EPS's own takeover (~6.5 Nm) is what lets go
+      const CAR = 6.5;
+      const tq = Math.min(CAR, Math.max(1.5, Math.round(Number(p.FiskerOverrideTorque) * 10) / 10));
+      const text = (v) => v >= CAR ? `${CAR.toFixed(1)} Nm · the car's own` : `${v.toFixed(1)} Nm`;
+      const value = el('b', text(tq));
+      const fill = (v) => slider.style.setProperty('--p', `${(v - 1.5) / (CAR - 1.5) * 100}%`);
+      const slider = el('input', { type: 'range', min: 1.5, max: CAR, step: 0.1, value: tq,
+        oninput: (e) => { const v = Number(e.target.value); value.textContent = text(v); fill(v); },
+        onchange: (e) => put({ FiskerOverrideTorque: Math.round(Number(e.target.value) * 10) / 10 }) });
+      fill(tq);
+      body.append(el('div.section',
+        el('h3', 'Steering takeover'),
+        el('p.desc', 'How hard you turn the wheel, held for a tenth of a second, before openpilot lets go of the steering. Lower makes the ' +
+          'wheel easier to take. Applies straight away, while driving too. 6.5 Nm is the car\'s own override torque: at the top step ' +
+          'openpilot doesn\'t let go on torque at all, and the steering system\'s own takeover releases the wheel.'),
+        el('div.rows', el('div.row', el('div.lbl', el('b', 'Takeover torque'), el('small', 'Default 3.0 Nm.')), value)), slider));
+    }
     if ('FiskerSpeedLimitUnit' in p) {
       // what the comma tells the ADAS in the head unit's map metadata (ICC_0x362): the ADAS reads the unit of the
       // speed-limit signs from it, and UK head units send it blank (km/h), so 30 mph signs set ACC to 30 km/h
