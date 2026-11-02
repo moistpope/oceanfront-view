@@ -5,6 +5,7 @@
 // events). They're parsed here, so the parsing can change without reinstalling the app. In a plain
 // browser there's no app and both cards stay hidden. Settings > Display > Debug has a demo of both.
 import { $, el, iconSvg, setClass, setText } from './util.js';
+import { iconManeuverFromUrl } from './navicon.js';
 
 const UNIT_M = { mi: 1609.344, mile: 1609.344, miles: 1609.344, ft: 0.3048, feet: 0.3048, foot: 0.3048, yd: 0.9144, yds: 0.9144, yard: 0.9144,
   yards: 0.9144, km: 1000, m: 1, meter: 1, meters: 1 };
@@ -51,7 +52,11 @@ export function parseNav(raw) {
   }
   if (!instruction) instruction = fields.find(f => !TRIP_RE.test(f) && !DIST_RE.test(f)) || '';
   const trip = [raw.subText, raw.info, raw.text, raw.title].map(clean).find(f => f && f !== instruction && TRIP_RE.test(f)) || '';
-  return { dist, instruction, street: streetOf(instruction), trip, maneuver: maneuverOf(instruction) };
+  const maneuver = maneuverOf(instruction);
+  // Google Maps often gives just the road ("Hartwith Lane"), the turn being in its picture (navicon.js)
+  let street = streetOf(instruction);
+  if (!street && !maneuver && instruction && !DIST_RE.test(instruction) && /[a-z]/i.test(instruction)) street = instruction.replace(/[.!]+$/, '');
+  return { dist, instruction, street, trip, maneuver };
 }
 
 // the street an instruction names: after its most telling word ("...take the 2nd exit onto High St"),
@@ -201,6 +206,13 @@ export class Infotainment {
     if (this.nav && !raw.icon && this.navIconKey === raw.iconKey) raw.icon = this.navIconData;
     if (this.nav) { this.navIconKey = raw.iconKey; this.navIconData = raw.icon; }
     this._showNav();
+    // the words don't say what to do: read it from the nav app's picture of the turn
+    const nav = this.nav;
+    if (nav && !nav.parsed.maneuver && raw.icon) {
+      iconManeuverFromUrl(raw.icon, raw.iconKey || raw.icon).then((m) => {
+        if (m && this.nav === nav && !nav.parsed.maneuver) { nav.parsed = { ...nav.parsed, maneuver: m }; this._showNav(); }
+      });
+    }
   }
 
   _showNav() {
@@ -215,10 +227,12 @@ export class Infotainment {
     setText(this.navWhat, p.street || p.instruction);
     setText(this.navTrip, p.street && p.instruction !== p.street ? `${p.instruction}${p.trip ? ' · ' + p.trip : ''}` : p.trip);
     // our arrow when the words say what to do, else the nav app's own picture of it
-    const key = p.maneuver ? `${p.maneuver.kind}-${p.maneuver.side}` : `img:${n.raw.iconKey || ''}`;
+    // (read from that picture, the picture stays)
+    const ours = p.maneuver && !p.maneuver.fromIcon;
+    const key = ours ? `${p.maneuver.kind}-${p.maneuver.side}` : `img:${n.raw.iconKey || ''}`;
     if (this.navIcon.dataset.key !== key) {
       this.navIcon.dataset.key = key;
-      if (p.maneuver) this.navIcon.innerHTML = maneuverSvg(p.maneuver);
+      if (ours) this.navIcon.innerHTML = maneuverSvg(p.maneuver);
       else this.navIcon.replaceChildren(...(n.raw.icon ? [el('img', { src: n.raw.icon, alt: '' })] : []));
     }
     arrow.set(p.maneuver && p.dist ? { ...p.maneuver, m: p.dist.m, half: p.dist.half, step: p.instruction } : null);

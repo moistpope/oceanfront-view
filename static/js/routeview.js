@@ -79,7 +79,7 @@ export class RouteView {
   /** The nav app's step (infotainment.js parseNav), or null when there's none. odo: the road's odometer now. */
   setNav(parsed, odo) {
     if (!parsed || !parsed.maneuver && !parsed.dist) { this.nav = null; return; }
-    const key = `${parsed.instruction}|${parsed.street}`;
+    const key = `${parsed.instruction}|${parsed.street}|${parsed.maneuver ? parsed.maneuver.kind + parsed.maneuver.side : ''}`;
     const m = parsed.dist ? parsed.dist.m : null;
     if (this.nav && this.nav.key === key && m != null && this.nav.m != null) {
       // the same step counting down: keep where it was pinned, nudged inside what the new distance allows

@@ -170,23 +170,26 @@ export function locate(g, x, y, h, wayId = null) {
 /** The turn the step means among the junctions passed on the walk ahead: {index into steps, opt, exitSteps} or null. */
 function findTurn(g, ahead, nav) {
   const man = nav.maneuver, rem = nav.remaining, half = nav.half || 0;
-  if (!man || man.kind === 'arrive' || man.kind === 'straight' && !nav.street) return null;
-  const want = man.side === 'left' ? 1 : man.side === 'right' ? -1 : 0;
+  // no words for what to do and no picture read: the road it names, at that distance, is the turn
+  if (!man && !nav.street) return null;
+  if (man && (man.kind === 'arrive' || man.kind === 'straight' && !nav.street)) return null;
+  const want = man && man.side === 'left' ? 1 : man && man.side === 'right' ? -1 : 0;
   let best = null;
   ahead.steps.forEach((st, k) => {
     if (rem != null && Math.abs(st.at - rem) > half + SLACK_M) return;
     const opts = options(g, st.node.k, st.step);
     const keep = k + 1 < ahead.steps.length ? opts.find(o => o.step === ahead.steps[k + 1].step) : null;
     for (const o of opts) {
-      if (o === keep && man.kind !== 'straight') continue;
       const w = g.ways[o.step.wi], a = Math.abs(o.turn) / DEG;
+      // the road carrying on isn't a turn, but onto a roundabout it carries on into is
+      if (o === keep && man && man.kind !== 'straight' && !(man.kind === 'roundabout' && w.roundabout)) continue;
       if (MINOR.has(w.className) && !names(w, nav.street)) continue;
       const side = want === 0 ? 1 : Math.sign(o.turn) === want ? 1 : 0;
-      const kindOk = man.kind === 'roundabout' ? !!w.roundabout
+      const kindOk = !man ? false : man.kind === 'roundabout' ? !!w.roundabout
         : man.kind === 'slight' || man.kind === 'keep' || man.kind === 'ramp' || man.kind === 'merge' ? a < 60
         : man.kind === 'sharp' ? a > 100 : man.kind === 'uturn' ? a > 140 : man.kind === 'straight' ? a < 35 : a > 35 && a < 150;
       const named = names(w, nav.street);
-      if (a > 150 && man.kind !== 'uturn') continue;   // back the way we came (the other carriageway of a named street)
+      if (a > 150 && !(man && man.kind === 'uturn')) continue;   // back the way we came (the other carriageway of a named street)
       if (!named && !(side && kindOk)) continue;
       const score = (named ? 4 : 0) + 2 * side + (kindOk ? 1 : 0) - (rem != null ? Math.abs(st.at - rem) / (half + SLACK_M) : 0);
       if (!best || score > best.score) best = { score, k, opt: o };
@@ -196,9 +199,9 @@ function findTurn(g, ahead, nav) {
 }
 
 /** At a roundabout entered by `entry`, round to the exit the step means: steps on the roundabout and the exit step. */
-function roundabout(g, entry, nav) {
+function roundabout(g, entry, nav, hIn = null) {
   const n = exitNumber(nav.instruction);
-  const ring = [];
+  const ring = [], seen = [];
   let s = entry.step, count = 0;
   for (let guard = 0; guard < 200; guard++) {
     ring.push(s);
@@ -207,10 +210,23 @@ function roundabout(g, entry, nav) {
     for (const e of exits) {
       count++;
       if ((n != null && count === n) || (n == null && names(g.ways[e.step.wi], nav.street))) return { ring, exit: e };
+      seen.push({ e, at: ring.length });
     }
     const on = opts.find(o => g.ways[o.step.wi].roundabout);
     if (!on || on.step === entry.step) break;
     s = on.step;
+  }
+  // no count or name to go by: the exit leaving most nearly the way the picture shows, against the way in (hIn); the
+  // picture's angle is + to the right, a turn here + to the left
+  const ang = nav.maneuver && nav.maneuver.angle;
+  if (n == null && ang != null && hIn != null && seen.length) {
+    const want = -ang * DEG;
+    let best = null, bestD = Infinity;
+    for (const x of seen) {
+      const d = Math.abs(angDiff(want, angDiff(hIn, heading(x.e.step.from, x.e.step.to))));
+      if (d < bestD) { bestD = d; best = x; }
+    }
+    if (best && bestD < 60 * DEG) return { ring: ring.slice(0, best.at), exit: best.e };
   }
   return { ring, exit: null };
 }
@@ -250,8 +266,9 @@ export function planRoute(layer, car, nav, opts = {}) {
     strong.push(...ahead.steps.slice(0, turn.k + 1).map(s => s.step));
     turnNode = ahead.steps[turn.k].node;
     let next = turn.opt;
-    if (nav.maneuver.kind === 'roundabout' && g.ways[next.step.wi].roundabout) {
-      const r = roundabout(g, next, nav);
+    if (g.ways[next.step.wi].roundabout && (!nav.maneuver || nav.maneuver.kind === 'roundabout')) {
+      const inStep = ahead.steps[turn.k].step;
+      const r = roundabout(g, next, nav, inStep.from ? heading(inStep.from, inStep.to) : null);
       turnStepIdx = strong.length;
       strong.push(...r.ring);
       next = r.exit;
@@ -277,7 +294,7 @@ export function planRoute(layer, car, nav, opts = {}) {
   if (!strong.length) return null;
   // the lanes: the car's, the turn's as it nears, the kerb side's on the roads after
   const laneOf = (s, which, keep = null) => laneOffset(g.ways[s.wi], s.j > s.i, leftTr, which, keep);
-  const turnSide = turn ? nav.maneuver.side : null;
+  const turnSide = turn && nav.maneuver ? nav.maneuver.side : null;
   const pts = [[at.x, at.y]], offs = [], wis = [];
   const egoLane = opts.egoOffset != null ? opts.egoOffset : laneOf(at.step, 'kerb');
   const all = [...strong, ...likely];
