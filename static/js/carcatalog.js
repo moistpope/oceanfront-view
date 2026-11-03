@@ -50,6 +50,7 @@ const OWNED = 'The head unit sends this setting itself every second; a request o
 const NO_MSG = 'The car has no message for this';
 const MOCK = 'Mockup: nothing on the car for this';
 const ADAS = 'Set under the gear menu → CAN settings (the comma sends the driver-assistance settings)';
+const HEAD_UNIT = 'Set on the car\'s own screen (the comma passes it through)';
 
 const T = (id, label, def, sub, x = {}) => ({ id, type: 'toggle', label, def, sub, ...x });
 const S = (id, label, options, def, sub, x = {}) => ({ id, type: 'seg', label, options, def, sub, ...x });
@@ -262,9 +263,9 @@ export const CATEGORIES = [
       {
         title: 'Blind spot',
         controls: [
-          // no "+ Vibration": sent that (3), the ADAS turned blind spot detection off for the whole drive (Nov 2 log)
-          S('icc.bsd', 'Blind spot (BSD)', ALERT_LEVELS.slice(0, 3), 2, null, { off: ADAS }),                               // ICC_BSDSetting
-          S('icc.bsdSens', 'Timing', SENSITIVITY, 0, null, { off: ADAS }),                                                  // ICC_BSD_Sensitivity
+          // the comma passes these through from the head unit (relayed as 3, "+ Vibration", the ADAS turned BSD off: Nov 2 log)
+          S('icc.bsd', 'Blind spot (BSD)', ALERT_LEVELS.slice(0, 3), 2, null, { off: HEAD_UNIT }),                          // ICC_BSDSetting
+          S('icc.bsdSens', 'Timing', SENSITIVITY, 0, null, { off: HEAD_UNIT }),                                             // ICC_BSD_Sensitivity
           S('icc.dow', 'Door open warning (DOW)', [[0, 'Off'], [1, 'Visual'], [2, '+ Sound']], 2, null, { off: ADAS }),     // ICC_DOW_Setting
         ],
       },
