@@ -1160,7 +1160,8 @@ export class CarScene {
         // of sight: that threw cars in the next lane up to ~1.4 m further out as we came up on them.
         const d = Math.hypot(o.x, o.y), hd = (o.heading || 0) * DEG, ax = Math.cos(hd), ay = Math.sin(hd);
         let cx = o.x, cy = o.y;
-        if (d > 2) {
+        // the world model's physical tracks (world/physics.js) give the footprint's center themselves
+        if (o.cx !== undefined) { cx = o.cx; cy = o.cy; } else if (d > 2) {
           const along = (o.x * ax + o.y * ay) / d;   // cosine between our line of sight and its length
           if (Math.abs(along) >= SIDE_ON_COS) {
             const k = Math.sign(along) * e.dims.l / 2;
@@ -1177,6 +1178,10 @@ export class CarScene {
         e.vx = c * o.vx - sn * o.vy;
         e.vy = sn * o.vx + c * o.vy;
         e.th = p.h + (o.heading || 0) * DEG;
+        // its motion until the next snapshot: along its heading, on its path's curve, speeding up or slowing down
+        // (the physical model's); without them, straight on at its velocity
+        e.phys = o.v !== undefined;
+        e.v = o.v ?? 0; e.acc = o.accel ?? 0; e.kappa = o.curvature ?? 0;
         if (e.wx == null || Math.hypot(e.tx - e.wx, e.ty - e.wy) > 15) { e.wx = e.tx; e.wy = e.ty; e.h = e.th; }
         e.lastSeen = now;
         e.data = o;
@@ -1203,11 +1208,23 @@ export class CarScene {
         continue;
       }
       e.pivot.visible = e.alpha > 0.01;
-      e.tx += e.vx * dt * rate;
-      e.ty += e.vy * dt * rate;
+      if (e.phys) {
+        // a kinematic bicycle: it can't slide or turn on the spot between snapshots either
+        const h = dt * rate;
+        let v1 = e.v + e.acc * h;
+        if (e.v * v1 < 0) v1 = 0;
+        const ds = (e.v + v1) / 2 * h, dpsi = e.kappa * ds, hm = e.th + dpsi / 2;
+        e.tx += ds * Math.cos(hm); e.ty += ds * Math.sin(hm);
+        e.th += dpsi; e.v = v1;
+        e.vx = e.v * Math.cos(e.th); e.vy = e.v * Math.sin(e.th);
+      } else {
+        e.tx += e.vx * dt * rate;
+        e.ty += e.vy * dt * rate;
+      }
       e.wx += (e.tx - e.wx) * k;
       e.wy += (e.ty - e.wy) * k;
-      e.h += (((e.th - e.h + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI) * kHead;
+      // a physical track's heading is already smooth: easing it would lag it behind its motion (a slide)
+      e.h += (((e.th - e.h + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI) * (e.phys ? k : kHead);
       for (const d of ['w', 'l', 'hgt']) e.size[d] += (e.dims[d] - e.size[d]) * kSize;
       fitScale(e.group, e.cls, e.size.w, e.size.l, e.size.hgt);
       e.group.position.z = -e.group.userData.length * e.group.scale.z / 2;   // pivot at the center

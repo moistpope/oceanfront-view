@@ -167,9 +167,42 @@ ego pose dead-reckoned from ESP wheel speed and the YRS yaw-rate gyro, and weigh
 noise model (radar: range and Doppler; camera: bearing, class, size; openpilot leads only corroborate
 on this car). The view anchors the objects to the ground, so parked cars stay put through turns; the
 scene's own ego motion now uses the gyro too. *Raw sources* draws each source as it reports. Radar
-tracks younger than 1.3 s are hidden unless *All radar tracks* is on. A world object is drawn with its
-center half a car length beyond the reported point along the car's own axis (half a width when seen
-side-on), since every source reports the face nearest us.
+tracks younger than 1.3 s are hidden unless *All radar tracks* is on.
+
+Each world object is physical (`static/js/world/physics.js`). Its track is an extended Kalman filter over a
+kinematic bicycle: its footprint's center, heading, speed along that heading, acceleration and path
+curvature. It turns only by driving along a curve, so it can't spin in place, and its velocity is along its
+heading, so it can't slide sideways. After each step the state is held to what its class and mass can do
+(`LIMITS`):
+- the tightest turning circle;
+- about 0.8 g of lateral grip;
+- acceleration limited by power over mass, so it falls with speed;
+- braking grip;
+- a top speed, and reversing only slowly.
+
+An object first seen standing is taken to face our way loosely; it turns itself round once it's seen
+coming toward us. Pedestrians and animals walk: they can turn on the spot but not move at car speeds.
+
+The sources report the face nearest us. The track keeps the center, moving each report back along the line
+of sight by the box's half extent there. A radar point target with no class or size stays a point.
+
+What's drawn is a simulated body for each track (`SimBody`): a bicycle steered by pure pursuit and driven by
+a speed controller toward the filter's estimate, under the same limits. So the noise in the estimate never
+shows as a car jumping, sliding or turning in place. A new object is drawn at its estimate until its speed is
+known (about its first second). One that falls more than 6 m (or 0.4 s of travel) behind is put back.
+
+No two vehicles share a place (`separate()`), and none overlaps our car. Overlapping boxes are pushed
+apart along the shallowest axis, the less certain moving more. Two that overlap most of a car and move
+alike are one object seen twice, and are merged.
+
+The snapshot gives each object's center (`cx`, `cy`), its signed speed `v`, `accel`, `curvature`,
+`yawRate`, front-wheel `steer` and an estimated `mass`. The view carries it along that curve between
+snapshots. `tools/track_eval.mjs ticks.jsonl` scores a recorded drive for spinning, slip, acceleration,
+lateral grip, jitter and overlaps. Against the constant-velocity tracker it replaced, on the demo drive:
+- overlapping vehicle pairs went from 174 to 0;
+- 95th-percentile slip went from 0.9° to 0.3°;
+- steps over 6 m/s² went from 16% to 5%;
+- 95th-percentile jitter went from 1.6 cm to 1.0 cm.
 
 Before fusing, each source is corrected by the *measured sensor calibration* (`MEASURED_CALIBRATION` in
 `world_model.js`, *Display → Geometry calibration*, on by default). Its values come from replaying
