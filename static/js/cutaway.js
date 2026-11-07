@@ -9,6 +9,7 @@
 // Car frame = scene frame (the ego car sits still at the origin): X right, Y up, Z back, the front bumper
 // at Z = 0. The part names are the nodes tools/export_ocean_glb.py splits out of the Ocean model.
 import * as THREE from '../vendor/three.module.min.js';
+import { drumShader } from './drum.js';
 import { SPECK_FRAGMENT, speckBlending } from './tracks.js';
 
 // everything between the rails (with the sunroof and the trim under it), and the rear window
@@ -209,6 +210,7 @@ function windowCut(material, edge, toEdge) {
     shader.vertexShader = shader.vertexShader.replace('void main() {',
       'uniform mat4 uToEdge;\nvarying vec2 vEdge;\nvoid main() {\n  vEdge = (uToEdge * vec4(position, 1.0)).xy;');
     shader.fragmentShader = shader.fragmentShader.replace('void main() {', `${EDGE_FRAG}\nvoid main() {\n  windowCut();`);
+    drumShader(shader);   // its own onBeforeCompile replaces the drum's (drum.js)
   };
   material.customProgramCacheKey = () => 'windowCut';
   material.userData.cut = true;

@@ -14,9 +14,10 @@ import { Settings } from './settings.js';
 import { VehicleState } from './vehicle.js';
 import { RoadCam } from './roadcam.js';
 
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 const AUTO_VIEW_HOLD_MS = 10000;   // a parking maneuver starting this soon after the user picked a view keeps it
 const TAP_PX = 8, TAP_MS = 300;    // a tap moves less and is shorter than this; two within TAP_MS are a double tap
+const DOCK_IDLE_MS = 10000;        // the controls close after this long left alone
 const STALE_MS = 6000;             // the comma streams at 20 Hz: this long without a message means its link is dead
 const COMMA_MS = 3000;             // the comma's stream counts as live this long after its last tick or snapshot
 const LOCAL_MS = 2500;             // the car's own view (10 Hz) counts as live this long after its last snapshot
@@ -26,7 +27,8 @@ const DEFAULTS = {
   showTracks: true, showRadar: false, radarAllTracks: false, showLowConf: false, showObjectStats: false, objectMode: 'world',
   laneHeadingSign: 1, laneCurvatureSign: 1, objectHeadingSign: 1, laneConfThreshold: LANE_CONF_THRESHOLD,
   showFps: true, renderScale: 'auto', showMusic: true, showNav: true, demoInfotainment: false, demoCarState: false, carDemo: false,
-  calibration: true, mapPrefetchKm: 25, positionSource: 'car', roadcam: 'mirror',
+  calibration: true, mapPrefetchKm: 25, positionSource: 'car', roadcam: 'mirror', groundStyle: 'perforated',
+  layout: 'auto', drum: false, driverSide: 'auto',
 };
 
 function loadSettings() {
@@ -43,6 +45,8 @@ function loadSettings() {
     if (paint) s.egoPaint = paint;
     delete s.egoColor;
   }
+  // v4: the plain ground style is called Flat
+  if ((s.version || 1) < 4 && s.groundStyle === 'standard') s.groundStyle = 'flat';
   return { ...DEFAULTS, ...s, version: SETTINGS_VERSION };
 }
 
@@ -87,6 +91,7 @@ class App {
     this.updateLayout();
     window.addEventListener('resize', () => this.updateLayout());
     if (window.ResizeObserver) new ResizeObserver(() => this.updateLayout()).observe($('#viewdock'));   // web fonts, icons
+    if (window.ResizeObserver) new ResizeObserver(() => this.energyHeight()).observe($('#energycard'));
     // mobile toolbars showing/hiding change the visible height without always firing window resize
     if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { this.scene.resize(); this.updateLayout(); });
     matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => this.applyTheme());
@@ -152,6 +157,7 @@ class App {
     if (key === 'calibration') this.worker.postMessage({ type: 'calibration', on: value });
     if (key === 'mapPrefetchKm') this.worker.postMessage({ type: 'mapPrefetch', km: Number(value) });
     if (key === 'positionSource') this.applyPositionSource();
+    if (key === 'layout' || key === 'drum') this.updateLayout();
     if (!this.car.apa) this.scene.update(this.state, this.settings);
     if (this.ui.isOpen && this.ui.tab === 'display') this.ui.show('display', true);
   }
@@ -186,16 +192,28 @@ class App {
   }
 
   updateLayout() {
-    // landscape: center the car in the area right of the status card
-    const portrait = window.innerWidth <= window.innerHeight;
-    document.documentElement.style.setProperty('--viewbar-w', `${$('#viewdock').offsetWidth}px`);
+    const W = window.innerWidth, H = window.innerHeight;
+    const portrait = W <= H;
+    // the wide strip: a short band across the screen, like the app beside another in split screen (the top third of
+    // the Ocean's portrait screen): a band at least 1.4 times as wide as it's tall that leaves most of the screen's
+    // height to something else. Or as chosen (Display -> Layout).
+    const band = W / H >= 1.4 && H <= 0.62 * (window.screen?.height || Infinity);
+    const wide = this.settings.layout === 'wide' || (this.settings.layout !== 'standard' && band);
+    document.documentElement.classList.toggle('wide', wide);
+    this.scene.setDrum(wide && !!this.settings.drum);
+    // the car in the middle of the screen, between the status card and the energy card
+    this.scene.setLayoutOffset(0);
+    // portrait overlays stack below the status card, the chips below the energy card
     const card = $('#drive');
-    const shift = portrait ? 0 : (card.getBoundingClientRect().right + 16) / 2 / window.innerWidth;
-    this.scene.setLayoutOffset(shift);
-    // portrait overlays stack below the status header
     document.documentElement.style.setProperty('--drive-h', `${Math.round(card.getBoundingClientRect().bottom)}px`);
+    this.energyHeight();
     if (this.car) this.car.layout(true);   // car controls: refit the car to what's left of the screen
     if (this.info) this.info.layout();
+  }
+
+  // the energy card's foot, which the chips sit under (it grows with the power trace)
+  energyHeight() {
+    document.documentElement.style.setProperty('--energy-h', `${Math.round($('#energycard').getBoundingClientRect().bottom)}px`);
   }
 
   // ---- world model worker --------------------------------------------------------------------------------
@@ -457,6 +475,22 @@ class App {
 
   // ---- view dock -----------------------------------------------------------------------------------------
   bindViewdock() {
+    // One button on the driver's side opens the view's buttons above it (what's playing runs beside it). They close
+    // again on a second tap, a tap elsewhere, once one of the buttons has done its thing, or after a while left alone.
+    const dock = $('#viewdock'), panel = $('#dockpanel'), btn = $('#btn-menu');
+    let idle = 0;
+    const later = () => { clearTimeout(idle); idle = setTimeout(() => showDock(false), DOCK_IDLE_MS); };
+    const showDock = (on) => {
+      setClass(panel, 'hidden', !on);
+      setClass(btn, 'on', on);
+      btn.setAttribute('aria-expanded', String(on));
+      btn.innerHTML = iconSvg(on ? 'close' : 'menu');
+      clearTimeout(idle);
+      if (on) later(); else showMenu(false);
+      this.info?.layout();
+    };
+    btn.addEventListener('click', () => showDock(panel.classList.contains('hidden')));
+    panel.addEventListener('pointerdown', later);
     // the camera views live in a menu behind the camera button
     const menu = $('#viewmenu'), cam = $('#btn-camera');
     cam.innerHTML = iconSvg('camera');
@@ -465,18 +499,20 @@ class App {
       setClass(cam, 'on', on);
       cam.setAttribute('aria-expanded', String(on));
     };
+    showDock(false);
     cam.addEventListener('click', () => showMenu(menu.classList.contains('hidden')));
     // the comma's live camera (roadcam.js) in a window over the 3D view, on and off
     const live = $('#btn-roadcam');
     live.innerHTML = iconSvg('video');
     live.addEventListener('click', () => {
-      showMenu(false);
+      showDock(false);
       if (this.roadcam.isOpen) this.roadcam.close();
       else this.roadcam.open(this.settings.roadcam);
     });
-    document.addEventListener('pointerdown', (e) => { if (!$('#viewdock').contains(e.target)) showMenu(false); });
+    $('#btn-settings').addEventListener('click', () => showDock(false));
+    document.addEventListener('pointerdown', (e) => { if (!dock.contains(e.target)) showDock(false); });
     $$('#viewmenu button[data-view]').forEach(b => b.addEventListener('click', () => {
-      showMenu(false);
+      showDock(false);
       this.autoViewActive = false;
       this.manualViewAt = performance.now();
       this.setSetting('view', b.dataset.view);

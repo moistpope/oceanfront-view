@@ -1,4 +1,7 @@
-// Energy details: the sheet behind the power bar's Details button (hud.js Econ). The VCU keeps energy
+// Battery and energy details: the sheet behind the energy card's charge (hud.js). First the battery as the BMS and the
+// VCU report it on the car's own buses (carstate.js): its usable charge and the range the car estimates, the real
+// charge, the energy available, its health and capacity, and the pack's voltage, current and power. Then the VCU's energy
+// counters. The VCU keeps energy
 // counters by consumer on IBUS1 (0x578-0x57C, 2 Hz, 0.1 kWh steps), one set for driving ("non-charging
 // mode": traction, climate, battery thermal management, accessories, external discharge) and one for
 // charging (into the battery, climate, battery thermal management, accessories, the charger's losses),
@@ -145,6 +148,12 @@ export class EnergyDetails {
     const close = el('button.icon.close', { 'aria-label': 'Close', onclick: () => this.close(), html: iconSvg('close') });
     const mode = el('span.chip.en-mode.hidden');
     const body = el('div.dialog-body');
+    const b = this.ui.batt = { soc: el('b', '--'), range: el('small.en-total-what', ''), fill: el('i'), kv: el('div.kv.bt-kv') };
+    b.empty = el('p.en-empty', 'Waiting for the car…');
+    b.live = el('div.en-live.hidden',
+      el('div.en-head', el('h3', 'Battery'), el('div.en-total', b.soc, el('small', '%'), b.range)),
+      el('div.bt-bar', b.fill), b.kv);
+    body.append(el('section.en-sec', b.empty, b.live));
     for (const m of MODES) {
       const u = this.ui[m.key] = {};
       u.total = el('b', '--');
@@ -170,15 +179,47 @@ export class EnergyDetails {
     }
     this.ui.foot = el('p.dialog-foot');
     body.append(this.ui.foot);
-    const card = el('div.dialog-card', { role: 'dialog', 'aria-label': 'Energy details' },
-      el('header', el('h2', 'Energy'), mode, close), body);
+    const card = el('div.dialog-card', { role: 'dialog', 'aria-label': 'Battery and energy details' },
+      el('header', el('h2', 'Battery & energy'), mode, close), body);
     this.root = el('div.dialog.hidden', { id: 'energy', 'aria-hidden': 'true', onclick: (e) => { if (e.target === this.root) this.close(); } }, card);
     this.ui.mode = mode;
     document.getElementById('app').append(this.root);
   }
 
+  // the battery's figures, where the car reports them
+  renderBattery(cs) {
+    const b = this.ui.batt, v = (n) => cs.value(n);
+    const soc = v('BMS_Bat_SoC_usable'), real = v('BMS_Bat_SOC_Real'), soh = v('BMS_Bat_SOH'), cap = v('BMS_Bat_Actual_Pack_Capacity');
+    const avl = cs.label('VCU_PwrBattAvlEgy') === 'Invalid' ? undefined : v('VCU_PwrBattAvlEgy');
+    const km = cs.label('VCU_DrvRngVld') === 'Valid' ? v('VCU_DrvgMilg') : undefined;
+    const volts = v('BMS_Bat_Hvmeasure_V_Pack'), amps = v('BMS_Bat_HVmeasure_Current');
+    const live = [soc, real, soh, avl, km, volts].some(x => x != null);
+    setClass(b.empty, 'hidden', live);
+    setClass(b.live, 'hidden', !live);
+    if (!live) return;
+    const metric = this.app.hud && this.app.hud.unitFor(this.app.settings, this.app.state && this.app.state.fisker) === 'kmh';
+    const dist = (k) => metric ? `${Math.round(k)} km` : `${Math.round(k / 1.609344)} mi`;
+    setText(b.soc, soc == null ? '--' : String(Math.round(soc)));
+    setText(b.range, km == null ? '' : `${dist(km)} range`);
+    b.fill.style.width = `${Math.max(0, Math.min(100, soc ?? 0))}%`;
+    const rows = [
+      ['Usable charge', soc != null ? `${Math.round(soc)}%` : null],
+      ['Real charge', real != null ? `${Math.round(real)}%` : null],
+      ['Range', km != null ? dist(km) : null],
+      ['Energy available', avl != null ? `${fmtKwh(avl)} kWh` : null],
+      ['Health', soh != null ? `${Math.round(soh)}%` : null],
+      ['Capacity', cap != null ? `${cap.toFixed(1)} Ah` : null],
+      ['Pack', volts != null ? `${volts.toFixed(0)} V` + (amps != null ? ` · ${amps.toFixed(1)} A · ${fmtKw(volts * amps / 1000)} kW` : '') : null],
+    ].filter(r => r[1] != null);
+    const key = rows.map(r => r.join('=')).join('|');
+    if (b.kv.dataset.key === key) return;
+    b.kv.dataset.key = key;
+    b.kv.replaceChildren(...rows.flatMap(([k, val]) => [el('span', k), el('span', val)]));
+  }
+
   render(cs, t) {
     if (!this.root || !cs) return;
+    this.renderBattery(cs);
     const modeRaw = cs.rawOf(MODE_SIGNAL);
     const modeText = modeRaw == null ? '' : (MODE_TEXT[modeRaw] || '');
     setClass(this.ui.mode, 'hidden', !modeText);

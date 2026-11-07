@@ -62,7 +62,20 @@
       <div id="limit" class="limit hidden" title="Speed limit"></div>
     </div>
     <div id="assist-text" class="assist-text"></div>
-    <div id="econ" class="econ hidden" title="Power: regeneration left, consumption right. Tap for the last minute."><div class="econ-bar"><i class="econ-neg"></i><i class="econ-pos"></i></div><canvas id="econ-graph" width="320" height="72"></canvas><div class="econ-foot"><button id="econ-details" class="econ-btn">Details</button></div></div>
+  </section>
+
+  <!-- energy: the status card's mirror on the passenger's side (top right; top left with the driver on the right): the
+       time, the battery's charge (tap: its details) and range, the temperature, and the power bar up its outer edge
+       (tap: the last minute, under it) -->
+  <section id="energycard" class="card">
+    <div id="ec-clock" class="ec-clock"></div>
+    <button id="ec-batt" class="ec-batt" type="button" aria-label="Battery details">
+      <span id="ec-soc" class="speed">--</span>
+      <span id="ec-unit" class="speed-unit">%</span>
+    </button>
+    <div id="ec-temp" class="ec-temp"></div>
+    <canvas id="econ-graph" class="ec-graph" width="320" height="72" aria-label="Power over the last minute"></canvas>
+    <button id="econ" class="econ hidden" type="button" aria-label="Power: consumption up, regeneration down. Tap for the last minute."><span class="econ-bar"><i class="econ-neg"></i><i class="econ-pos"></i></span></button>
   </section>
 
   <!-- alerts -->
@@ -78,17 +91,24 @@
   <!-- traffic light / sign (top right) -->
   <div id="roadinfo" class="roadinfo"></div>
 
-  <!-- view dock: the HUD settings, the comma's live camera (on/off) and the 3D view's angles (a menu behind the camera button) -->
+  <!-- the controls: one button on the driver's side (bottom left; bottom right with the driver on the right) that opens
+       the view's buttons above it: the HUD settings, the comma's live camera (on/off) and the 3D view's angles (a menu
+       behind the camera button). What's playing runs along the bottom beside it (infotainment.js). -->
   <div id="viewdock" class="viewdock">
-    <div id="viewmenu" class="viewmenu hidden" role="menu">
-      <button data-view="chase" class="on" role="menuitemradio">Chase</button>
-      <button data-view="top" role="menuitemradio">Top</button>
-      <button data-view="close" role="menuitemradio">Close</button>
-      <button data-view="far" role="menuitemradio">Wide</button>
+    <div id="dockpanel" class="dockpanel hidden">
+      <div class="dockrow">
+        <div id="viewmenu" class="viewmenu hidden" role="menu">
+          <button data-view="chase" class="on" role="menuitemradio">Chase</button>
+          <button data-view="top" role="menuitemradio">Top</button>
+          <button data-view="close" role="menuitemradio">Close</button>
+          <button data-view="far" role="menuitemradio">Wide</button>
+        </div>
+        <button id="btn-settings" class="icon" title="Settings" aria-label="Settings"></button>
+        <button id="btn-roadcam" class="icon" title="Comma camera: the live camera with its path and lanes, or back to the 3D view" aria-label="Comma camera" aria-pressed="false"></button>
+        <button id="btn-camera" class="icon" title="Camera view" aria-label="Camera view" aria-haspopup="menu"></button>
+      </div>
     </div>
-    <button id="btn-settings" class="icon" title="Settings" aria-label="Settings"></button>
-    <button id="btn-roadcam" class="icon" title="Comma camera: the live camera with its path and lanes, or back to the 3D view" aria-label="Comma camera" aria-pressed="false"></button>
-    <button id="btn-camera" class="icon" title="Camera view" aria-label="Camera view" aria-haspopup="menu"></button>
+    <button id="btn-menu" class="icon" aria-label="Controls" aria-expanded="false" aria-controls="dockpanel"></button>
   </div>
 
   <!-- car controls (carcontrols.js, DESIGN.md): controls and chips pinned to the car, the dock of categories and

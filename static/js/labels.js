@@ -5,6 +5,7 @@
 // deg; L/R = left/right of the car's center line.
 import * as THREE from '../vendor/three.module.min.js';
 import { el } from './util.js';
+import { drumPoint } from './drum.js';
 
 const TEXT_PERIOD_S = 0.2;
 const FAR_M = 60;      // past this, a tag shrinks to one line
@@ -121,7 +122,7 @@ export class ObjectLabels {
     let z = entries.length + 1;
     for (const e of entries) {
       const it = e.it;
-      this.v.set(e.pos[0], e.pos[1], e.pos[2]).project(camera);
+      drumPoint(this.v.set(e.pos[0], e.pos[1], e.pos[2])).project(camera);   // where the drum horizon draws it
       const sx = (this.v.x + 1) / 2 * W, sy = (1 - this.v.y) / 2 * H;
       const left = sx - it.w / 2;
       const place = (below) => {

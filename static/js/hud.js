@@ -1,4 +1,4 @@
-import { cameraSignUnit, cameraSignValue, signStyle } from './regional.js';
+import { cameraSignUnit, cameraSignValue, signStyle, leftTraffic } from './regional.js';
 // DOM overlay: speed, gear, steering assist (MADS), ACC set speed + gap, speed limit, telltales, alerts.
 import { $, $$, el, icon, iconSvg, setClass, setText, prettyLabel, MS_TO_KPH, MS_TO_MPH } from './util.js';
 import { EnergyDetails } from './energy.js';
@@ -10,26 +10,27 @@ const GEAR_LETTER = {
 const PERSONALITY_BARS = { aggressive: 1, standard: 2, relaxed: 3 };
 
 
-// The power bar at the bottom of the status card: Tesla's bar without the graduations. Its origin is the
-// middle; regeneration draws to the left in green, consumption to the right in the text color. The value is
-// the motors' electrical power from the Fisker bus (fisker_world.js power: kw actual, demandKw asked), eased
-// so it reads. A tap opens the last minute as a trace on a canvas: consumption above the line, regen below,
-// with a Details button (only there when open) for the VCU's energy counters by consumer (energy.js).
+// The power bar up the energy card's outer edge: Tesla's bar without the graduations. Its origin is the middle;
+// consumption draws up in the text color, regeneration down in green. The value is the motors' electrical power from
+// the Fisker bus (fisker_world.js power: kw actual, demandKw asked), eased so it reads. A tap shows the last minute as a
+// trace at the card's foot, now at the bar's end and fading out inward: consumption above the line, regen below. The
+// battery's details (energy.js) open from the charge.
 const ECON_DRIVE_KW = 180;   // full scale to the right
 const ECON_REGEN_KW = 60;    // ...and to the left (the Ocean regenerates far less than it drives)
 const ECON_SECONDS = 60;
 class Econ {
   constructor(app) {
     this.box = $('#econ');
-    this.pos = $('.econ-pos', this.box);
-    this.neg = $('.econ-neg', this.box);
+    this.card = $('#energycard');
     this.canvas = $('#econ-graph');
     this.kw = 0;
     this.hist = [];   // [t, kw]
     this.lastAt = 0;
     this.details = new EnergyDetails(app);
-    this.box.addEventListener('click', () => this.box.classList.toggle('open'));
-    $('#econ-details').addEventListener('click', (e) => { e.stopPropagation(); this.details.open(); });
+    this.box.addEventListener('click', () => {
+      this.card.classList.toggle('graph');
+      if (this.card.classList.contains('graph')) this.draw(performance.now() / 1000);
+    });
   }
   update(kw, t, carState) {
     this.details.sample(carState, t);
@@ -39,11 +40,12 @@ class Econ {
     this.lastAt = t;
     this.kw += (kw - this.kw) * 0.25;
     const v = Math.abs(this.kw) < 0.3 ? 0 : this.kw;
-    this.pos.style.width = `${Math.min(50, Math.max(0, v) / ECON_DRIVE_KW * 50).toFixed(1)}%`;
-    this.neg.style.width = `${Math.min(50, Math.max(0, -v) / ECON_REGEN_KW * 50).toFixed(1)}%`;
+    // how far each side reaches, as a share of the bar (across it, or up and down it in the wide strip: app.css)
+    this.box.style.setProperty('--pos', `${Math.min(50, Math.max(0, v) / ECON_DRIVE_KW * 50).toFixed(1)}%`);
+    this.box.style.setProperty('--neg', `${Math.min(50, Math.max(0, -v) / ECON_REGEN_KW * 50).toFixed(1)}%`);
     this.hist.push([t, kw]);
     while (this.hist.length && t - this.hist[0][0] > ECON_SECONDS) this.hist.shift();
-    if (this.box.classList.contains('open')) this.draw(t);
+    if (this.card.classList.contains('graph')) this.draw(t);
   }
   draw(t) {
     const c = this.canvas, ctx = c.getContext('2d');
@@ -51,13 +53,15 @@ class Econ {
     const w = c.width, h = c.height, mid = h * 0.65;   // more room above the line: consumption is the bigger number
     ctx.clearRect(0, 0, w, h);
     const style = getComputedStyle(this.box);
-    const x = (tt) => w - (t - tt) / ECON_SECONDS * w;
+    // now at the bar's end of the card: the right, or the left with the driver on the right
+    const rhd = document.documentElement.classList.contains('rhd');
+    const x = (tt) => rhd ? (t - tt) / ECON_SECONDS * w : w - (t - tt) / ECON_SECONDS * w;
     const y = (kw) => kw >= 0 ? mid - Math.min(1, kw / ECON_DRIVE_KW) * mid : mid + Math.min(1, -kw / ECON_REGEN_KW) * (h - mid);
     for (const [sign, color] of [[1, style.getPropertyValue('--text')], [-1, style.getPropertyValue('--green')]]) {
       ctx.beginPath();
       ctx.moveTo(x(this.hist[0]?.[0] ?? t), mid);
       for (const [tt, kw] of this.hist) ctx.lineTo(x(tt), y(sign > 0 ? Math.max(0, kw) : Math.min(0, kw)));
-      ctx.lineTo(w, mid);
+      ctx.lineTo(x(t), mid);
       ctx.closePath();
       ctx.fillStyle = color.trim() || '#888';
       ctx.globalAlpha = 0.85;
@@ -101,6 +105,11 @@ export class Hud {
     this.lastAlertKey = '';
     this.lastRoadKey = '';
     this.isMetric = null;
+    // the energy card (index.html): the time, the battery's charge and range (a tap: its details), the temperature
+    this.ec = { clock: $('#ec-clock'), soc: $('#ec-soc'), unit: $('#ec-unit'), temp: $('#ec-temp') };
+    $('#ec-batt').addEventListener('click', () => this.econ.details.open());
+    this.clockMin = -1;
+    this.rhd = false;
   }
 
   unitFor(settings, f) {
@@ -144,6 +153,36 @@ export class Hud {
     this._alerts(state, op, f);
     this._roadinfo(f, unit);
     this._roadname(state);
+    this._energy(f, unit);
+    this._driverSide(settings, f);
+  }
+
+  // The driver's side: as set (Display -> Driver's side), else the right where traffic keeps left. The layout mirrors
+  // for a driver on the right (app.css html.rhd).
+  _driverSide(settings, f) {
+    const rhd = settings.driverSide === 'right' || (settings.driverSide !== 'left' && leftTraffic(settings, f));
+    if (rhd === this.rhd) return;
+    this.rhd = rhd;
+    document.documentElement.classList.toggle('rhd', rhd);
+    this.app.updateLayout();
+  }
+
+  // The energy card: the time (to the minute), the battery's usable charge and the range the car estimates (the car's
+  // own buses, carstate.js), and the outside temperature, in the speed's units.
+  _energy(f, unit) {
+    const cs = this.app.carState, now = new Date(), min = now.getHours() * 60 + now.getMinutes();
+    if (min !== this.clockMin) {
+      this.clockMin = min;
+      setText(this.ec.clock, now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    }
+    const soc = cs ? cs.value('BMS_Bat_SoC_usable') : undefined;
+    setText(this.ec.soc, soc == null ? '--' : String(Math.round(soc)));
+    const km = cs && cs.label('VCU_DrvRngVld') === 'Valid' ? cs.value('VCU_DrvgMilg') : undefined;
+    const range = km == null ? '' : unit === 'kmh' ? `${Math.round(km)} km` : `${Math.round(km / 1.609344)} mi`;
+    setText(this.ec.unit, range ? `% · ${range}` : '%');
+    let tc = f && f.vehicle ? f.vehicle.outsideTempC : null;
+    if (tc == null && cs && cs.value('ECC_OutdTVld') === 1) tc = cs.value('ECC_OutdT');
+    setText(this.ec.temp, tc == null ? '' : unit === 'kmh' ? `${Math.round(tc)}°C` : `${Math.round(tc * 9 / 5 + 32)}°F`);
   }
 
   // The road we're on, bottom center: the map match's name and ref (mapmatch.js), else the road name
@@ -160,7 +199,6 @@ export class Hud {
     else if (now - this.lastRoadName.at < 8000 && this.lastRoadName.name) { name = this.lastRoadName.name; ref = this.lastRoadName.ref; stale = true; }
     setClass(this.roadname, 'hidden', !name);
     setClass(this.roadname, 'stale', stale);
-    setClass(this.roadname, 'lifted', state.mode === 'replay');
     if (!name) return;
     const key = name + '|' + ref;
     if (this.roadname.dataset.key !== key) {
@@ -326,10 +364,6 @@ export class Hud {
       for (const k of ['construction', 'landmark', 'laneMarking', 'hazard']) {
         const it = road[k];
         if (it && it.dist) rows.push([k, el('div.ri', prettyLabel(it.type || k), el('small', `${it.dist} m`))]);
-      }
-      if (f.vehicle && f.vehicle.outsideTempC != null) {
-        const tc = f.vehicle.outsideTempC;
-        rows.push(['temp', el('div.ri', el('small', unit === 'kmh' ? `${Math.round(tc)}°C` : `${Math.round(tc * 9 / 5 + 32)}°F`))]);
       }
     }
     const key = rows.map(r => r[0] + r[1].textContent).join('|');

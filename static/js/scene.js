@@ -10,6 +10,9 @@ import { applyLamps } from './lamps.js';
 import { RoadModel, linePoints, modelXOffset } from './road.js';
 import { RoadFurniture } from './furniture.js';
 import { RoadField } from './ground.js';
+import { GroundStyle } from './groundstyle/index.js';
+import { installDrum, DRUM, fadeAtDrum } from './drum.js';
+import { BlindSpot } from './blindspot.js';
 import { PowerTrails, motorLoad } from './tracks.js';
 import { ObjectLabels } from './labels.js';
 import { Cutaway } from './cutaway.js';
@@ -128,12 +131,18 @@ function studioEnvironment(renderer) {
   return tex;
 }
 
+installDrum();   // every material can bend over the drum horizon (drum.js), flat until it's on
+
 export const VIEWS = {
   chase: { r: 17, phi: 1.02, theta: 0, offY: 0.2 },
   top: { r: 26, phi: 0.04, theta: 0, offY: 0.0 },
   close: { r: 8.5, phi: 1.12, theta: 0.65, offY: 0.06 },
   far: { r: 36, phi: 0.9, theta: 0, offY: 0.26 },
 };
+// the drum horizon (drum.js): the drum's radius (m), and the chase view over it, lower, so the road falls away over
+// its edge with the background above, as in the concept's renders
+const DRUM_R = 120;
+const DRUM_CHASE = { r: 16, phi: 1.1, theta: 0, offY: 0.05 };
 
 function toScene(x, y) { return [-y, -x]; }
 
@@ -359,6 +368,7 @@ export class CarScene {
       this._lightEgo(g);
       g.userData.drive = driveModel(g);
       this.scene.add(g);
+      this.groundStyle.buildEgo(g);   // our car's height map, for the concept ground styles
       this.setEgoLook(this.egoLook.paint, this.egoLook.wheels);
       this.cutaway.attach(g);
     }).catch((e) => console.warn('Ocean model unavailable, keeping the procedural car', e));
@@ -366,10 +376,11 @@ export class CarScene {
     // lane & path materials (colors set by theme)
     this.mats = {
       line: lineMaterial(0x8e949d), lineBlue: lineMaterial(0x3e6ae1), lineYellow: lineMaterial(0xdcaa2e),
+      lineEgo: lineMaterial(0x8e949d),   // our lane's own white lines: the same as `line`, apart for the ground styles' colors (groundstyle/)
       lineRed: lineMaterial(0xe5413a), edge: lineMaterial(0x6c727b), model: lineMaterial(0xa7adb5, 0.7),
       modelEdge: lineMaterial(0x6c727b, 0.5), path: lineMaterial(0x3e6ae1, 0.16), slot: lineMaterial(0x3e6ae1, 0.8),
       ussRed: lineMaterial(0xe5413a, 0.9), ussAmber: lineMaterial(0xf0a020, 0.9), ussYellow: lineMaterial(0xe8d23a, 0.85),
-      ussGreen: lineMaterial(0x2fa84f, 0.6), bsd: lineMaterial(0xe5413a, 0.22),
+      ussGreen: lineMaterial(0x2fa84f, 0.6),
       // inferred (procedural) lane lines
       lineSoft: lineMaterial(0x8e949d, 0.55), lineYellowSoft: lineMaterial(0xdcaa2e, 0.5), lineBlueSoft: lineMaterial(0x3e6ae1, 0.5),
       // stop lines and crosswalks
@@ -381,8 +392,10 @@ export class CarScene {
     // the arm strips lie on the network's strips (roadnet.js): over them by polygon offset, under the tires by height
     Object.assign(this.mats.branch, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -3 });
     // lane lines show with the road, stop lines wherever there's ground
-    for (const k of ['line', 'lineBlue', 'lineYellow', 'lineRed', 'edge', 'lineSoft', 'lineYellowSoft', 'lineBlueSoft']) this.field.mask(this.mats[k], 'road');
+    for (const k of ['line', 'lineEgo', 'lineBlue', 'lineYellow', 'lineRed', 'edge', 'lineSoft', 'lineYellowSoft', 'lineBlueSoft']) this.field.mask(this.mats[k], 'road');
     this.field.mask(this.mats.marking, 'ground');
+    // the overlays on the road fade toward the drum horizon (drum.js), as the road under them does
+    for (const k of ['path', 'slot', 'ussRed', 'ussAmber', 'ussYellow', 'ussGreen']) fadeAtDrum(this.mats[k]);
     this.ribbons = {};
     for (const key of Object.keys(this.mats)) {
       this.ribbons[key] = new Ribbon(this.mats[key], key === 'path' ? 128 : 1024);
@@ -399,6 +412,9 @@ export class CarScene {
     this.roadOut = null;   // this frame's road (RoadModel.update)
     this.ribbons.zebra = new Ribbon(this.mats.marking, 256);
     this.scene.add(this.ribbons.zebra.mesh);
+    this.blindSpot = new BlindSpot(this.scene);   // the blind-spot warning on the road beside the car (blindspot.js)
+    this.egoLinePts = { L1: null, R1: null };   // this frame's lines of our lane (car frame), for it
+    this.bsdWarn = {};
     this.furniture = new RoadFurniture(this.scene);
     this.tracks = new PowerTrails(this.world);
 
@@ -410,6 +426,9 @@ export class CarScene {
     this.cutaway = new Cutaway(this);   // car controls mockup: roof, highlights and the parts drawn over the car
     this.lampOverride = null;           // lamp states shown instead of the car's (the lighting preview)
     this.theme = THEMES.light;
+    // the concept ground styles (Display -> Ground style): a perforated sheet or a point cloud the cars rise out of
+    this.groundStyle = new GroundStyle(this);
+    this.groundStyle.setTheme(false, this.theme);
     this.odometer = 0;
     this.clock = 0;
     this.state = null;
@@ -434,6 +453,8 @@ export class CarScene {
     this.controls.addEventListener('start', () => { this.interacting = true; this.viewAnim = null; });
     this.controls.addEventListener('end', () => { this.interacting = false; this.lastInteract = performance.now(); });
 
+    this.drumOn = false;   // the drum horizon (Display -> Layout, in the wide strip)
+    this.drumK = 0;        // its curvature now, eased (1/m)
     this.viewOffset = { x: 0, y: VIEWS.chase.offY };
     this.layoutX = 0;      // horizontal shift that centers the car right of the status card (setLayoutOffset)
     this.studio = null;    // car controls: { target } the camera frames instead of following the car
@@ -456,12 +477,14 @@ export class CarScene {
     this.headBeam.material.opacity = dark ? 0.45 : 0.2;
     this.headBeam.material.needsUpdate = true;
     this.tracks.setTheme(dark);
+    this.groundStyle.setTheme(dark, t);
     this.egoEnvLevel = dark ? EGO_ENV.dark : EGO_ENV.light;
     this._lightEgo(this.ego);
     this.cutaway.setTheme(dark);
     this.hemi.color.set(t.hemiSky);
     this.hemi.groundColor.set(t.hemiGround);
     this.mats.line.color.set(t.line);
+    this.mats.lineEgo.color.set(t.line);
     this.mats.lineSoft.color.set(t.line);
     this.mats.branch.color.set(t.ground).lerp(new THREE.Color(t.road), dark ? 0.35 : 0.07);   // the lanes' tint (ground.js), so arms match our road
     this.roadnet.setTheme(t, dark);
@@ -512,8 +535,15 @@ export class CarScene {
     this.resize();
   }
 
+  // the drum horizon on or off: the chase view moves to its framing
+  setDrum(on) {
+    if (on === this.drumOn) return;
+    this.drumOn = on;
+    if (!this.studio && this.view) this.setView(this.view);
+  }
+
   setView(name, instant = false) {
-    const v = VIEWS[name] || VIEWS.chase;
+    const v = (name === 'chase' && this.drumOn ? DRUM_CHASE : VIEWS[name]) || VIEWS.chase;
     this.view = name;
     const to = new THREE.Spherical(v.r * (name === 'chase' ? this.chaseDolly : 1), v.phi, v.theta);
     this._animate(this.target, to, { x: this.layoutX, y: v.offY }, instant, this.camLag);
@@ -681,7 +711,7 @@ export class CarScene {
 
     const latActive = !!((op.carControl && op.carControl.latActive) || (op.selfdriveStateSP && op.selfdriveStateSP.mads && op.selfdriveStateSP.mads.active));
     const hmi = f && f.lanes ? f.lanes.hmi : null;
-    const pieces = { line: [], lineBlue: [], lineYellow: [], lineRed: [], lineSoft: [], lineYellowSoft: [], lineBlueSoft: [], edge: [], model: [], modelEdge: [] };
+    const pieces = { line: [], lineEgo: [], lineBlue: [], lineYellow: [], lineRed: [], lineSoft: [], lineYellowSoft: [], lineBlueSoft: [], edge: [], model: [], modelEdge: [] };
     // the material a line is drawn with: the ego lane's two lines take the HMI's colors (blue while steering, red for
     // a departure), the rest their marking's; inferred lines the soft variants
     const keyOf = (id, color, inferred) => {
@@ -691,9 +721,11 @@ export class CarScene {
       if (ego && (latActive || (side && side.color === 'blue'))) key = 'lineBlue';
       if (ego && side && (side.color === 'red' || (side.flash && this.clock % 0.6 < 0.3))) key = 'lineRed';
       if (inferred) key = { line: 'lineSoft', lineYellow: 'lineYellowSoft', lineBlue: 'lineBlueSoft', lineRed: 'lineRed' }[key];
+      else if (ego && key === 'line') key = 'lineEgo';
       return key;
     };
     // the two road sources are drawn by separate code: the map's road when the car is placed on it, else the cameras'
+    this.egoLinePts = { L1: null, R1: null };
     const road = this.roadOut, ref = this.mapRef;
     const jn = ref ? this._mapLines(pieces, ref, phase, keyOf) : this._cameraLines(pieces, road, phase, keyOf, s);
     // stop line / crosswalk the ADAS reports, across the road at its distance
@@ -713,6 +745,7 @@ export class CarScene {
       });
     }
     this.ribbons.line.set(pieces.line, 0.14);
+    this.ribbons.lineEgo.set(pieces.lineEgo, 0.14);
     this.ribbons.lineSoft.set(pieces.lineSoft, 0.13);
     this.ribbons.lineYellowSoft.set(pieces.lineYellowSoft, 0.14);
     this.ribbons.lineBlueSoft.set(pieces.lineBlueSoft, 0.18);
@@ -738,14 +771,12 @@ export class CarScene {
     this.ribbons.branchCenter.set([], 0.14, 0.012);
     this.ribbons.branchLane.set([], 0.13, 0.012);
 
-    // blind-spot glow beside the car
-    const bsd = [];
+    // blind spot: our lane's line on that side red along the car, or ripples from its side where there's no line
+    // (blindspot.js; drawn in frame())
     const thr = f && f.threats;
     const left = thr ? (thr.left.bsd && thr.left.bsd.v >= 1 && thr.left.bsd.v <= 3) : cs.leftBlindspot;
     const right = thr ? (thr.right.bsd && thr.right.bsd.v >= 1 && thr.right.bsd.v <= 3) : cs.rightBlindspot;
-    if (left || cs.leftBlindspot) bsd.push([[-8, 3.0], [2, 3.0]]);
-    if (right || cs.rightBlindspot) bsd.push([[-8, -3.0], [2, -3.0]]);
-    this.ribbons.bsd.set(bsd, 2.6, 0.012);
+    this.bsdWarn = { left: { on: !!(left || cs.leftBlindspot), pts: this.egoLinePts.L1 }, right: { on: !!(right || cs.rightBlindspot), pts: this.egoLinePts.R1 } };
   }
 
   /** A line's pieces into the material by its marking type (2 dashed, 3 Botts dots, 4..7 double lines, else solid). */
@@ -772,6 +803,7 @@ export class CarScene {
       if (line.inferred && s.showRoad === false) continue;
       const pts = line.inferred ? offsetLine(anchor, line.offset - road.anchor.offset) : linePoints(line.c, xFrom, xTo, 2);
       if (line.edge) { pieces.edge.push(pts); continue; }
+      if (line.id === 'L1' || line.id === 'R1') this.egoLinePts[line.id] = pts;
       this._styled(pieces, keyOf(line.id, line.color, line.inferred), line.type, [pts], phase);
     }
     return { arms: [], cuts: { left: [], right: [], all: [] } };
@@ -779,8 +811,9 @@ export class CarScene {
 
   // The map's road (mapsurface.js): its lines are the network's (roadnet.js), the same for every road; here only the
   // two lines bounding the lane the car is drawn in, when the HMI colors them (blue while steering, red for a
-  // departure), solid over the network's, opened at the junctions along it. Returns the junction geometry (its
-  // arms are drawn by the caller).
+  // departure), solid over the network's, opened at the junctions along it; with a ground style on, always (its road
+  // map colors our lane's lines apart from the rest: groundstyle/surface.js). Returns the junction geometry (its arms
+  // are drawn by the caller).
   _mapLines(pieces, ref, phase, keyOf) {
     const hm = { left: ref.width[1], right: -ref.width[0] };
     const jn = junctions(ref, hm);
@@ -794,9 +827,11 @@ export class CarScene {
     if (ref.reveal > 0) {
       for (const l of ref.structure) {
         if (!l.ego) continue;
+        const pts = lineAlong(ref, null, l.d);
+        if (l.kind !== 'edge' && (l.ego === 'L1' || l.ego === 'R1')) this.egoLinePts[l.ego] = pts;
         const key = keyOf(l.ego, l.kind === 'center' ? 'yellow' : 'white', false);
-        if (key !== 'lineBlue' && key !== 'lineRed') continue;
-        this._styled(pieces, key, l.kind === 'center' ? 7 : 1, cut(lineAlong(ref, null, l.d), l.d), phase);
+        if (key !== 'lineBlue' && key !== 'lineRed' && this.groundStyle.style === 'flat') continue;
+        this._styled(pieces, key, l.kind === 'center' ? 7 : 1, cut(pts, l.d), phase);
       }
     }
     return jn;
@@ -1463,6 +1498,7 @@ export class CarScene {
     this.furniture.update(this.state, this.mapFrame || this.road, this.vehicle, this.settings, dt, this.clock, toScene, { hideLight: !!this.ourSignal });
     this.navArrow.road = this.mapFrame || this.road;
     this._laneGeometry();
+    this.blindSpot.update(dt, this.clock, this.bsdWarn);
     this._uss();
     this._objects(dt);
     this._radar(dt);
@@ -1471,7 +1507,12 @@ export class CarScene {
     this._tracks(dt);
     this.cutaway.update(dt, this.clock);
     this._driveModel();
+    this.groundStyle.update();   // after the objects and the car have moved
     this.navArrow.update(toScene, this.clock);
+    // the drum eases in and out, and flattens while the car controls frame the car
+    const k = this.drumOn && !this.studio && !this.cutaway.awake ? 1 / DRUM_R : 0;
+    this.drumK += (k - this.drumK) * (1 - Math.exp(-dt * 3));
+    DRUM.value.x = this.drumK < 1e-4 / DRUM_R ? 0 : this.drumK;
     this.renderer.render(this.scene, this.camera);
     this._labels();   // after render: the camera's matrices are this frame's
   }

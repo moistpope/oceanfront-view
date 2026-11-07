@@ -83,7 +83,6 @@ function maneuverSvg(mv) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><g${flip}>${body}</g></svg>`;
 }
 
-const fmtTime = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
 export class Infotainment {
   constructor(app) {
@@ -97,7 +96,11 @@ export class Infotainment {
     window.addEventListener('webhud:nav', (e) => { if (!this.demo) this.setNav(e.detail); });
     window.addEventListener('webhud:infotainment', () => this._pull());   // the app was away, or the page just finished loading
     this._pull();   // what the app already had before this page loaded
-    if (window.ResizeObserver) new ResizeObserver(() => this.layout()).observe($('#replaybar'));
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(() => this.layout());
+      ro.observe($('#replaybar'));
+      ro.observe(this.music);
+    }
     this.apply();
   }
 
@@ -121,27 +124,24 @@ export class Infotainment {
 
   // ---- music ----
 
+  // What's playing, along the bottom of the screen as in the concept's boards (01's open bottom): the title, the artist
+  // and album and a hairline of progress, as type on the scene (by day on a light veil), with play/pause and next on
+  // the driver's side beside the controls' button. Their icons are small; each button's touch area is large and reaches
+  // down to the screen's edge (app.css), for a big screen that's hard to hit accurately while driving.
   _buildMusic() {
-    this.art = el('div.mc-art');
-    this.title = el('b');
-    this.artist = el('span');
-    this.source = el('small');
+    this.title = el('b.mc-title');
+    this.artist = el('span.mc-artist');
     this.bar = el('i');
-    this.elapsed = el('span');
-    this.total = el('span');
     const btn = (icon, action, label) => {
       const b = el('button.mc-btn', { type: 'button', 'aria-label': label, onclick: () => this.command(action) });
       b.innerHTML = iconSvg(icon);
       return b;
     };
-    this.prev = btn('prev', 'prev', 'Previous');
     this.play = btn('play', 'toggle', 'Play or pause');
-    this.next = btn('next', 'next', 'Next');
-    this.music = el('section.card.musiccard.hidden', { id: 'musiccard', 'aria-label': 'Now playing' },
-      this.art,
-      el('div.mc-meta', this.title, this.artist, this.source),
-      el('div.mc-ctl', this.prev, this.play, this.next),
-      el('div.mc-time', this.elapsed, el('div.mc-bar', this.bar), this.total));
+    this.next = btn('next', 'next', 'Next track');
+    this.music = el('section.musicbar.hidden', { id: 'musiccard', 'aria-label': 'Now playing' },
+      el('div.mc-ctl', this.play, this.next),
+      el('div.mc-meta', this.title, this.artist, el('div.mc-bar', this.bar)));
     $('#app').append(this.music);
   }
 
@@ -163,15 +163,8 @@ export class Infotainment {
     if (!on) { this.layout(); return; }
     setText(this.title, m.title || m.album || '');
     setText(this.artist, [m.artist, m.album].filter(Boolean).join(' · '));
-    setText(this.source, m.app || '');
-    if (this.artShown !== m.art) {
-      this.artShown = m.art;
-      this.art.style.backgroundImage = m.art ? `url("${m.art}")` : '';
-      setClass(this.art, 'none', !m.art);
-    }
     const ctl = !!this.demo || !!window.WebHudApp?.media;
     const can = m.actions || {};
-    this.prev.disabled = !ctl || can.prev === false;
     this.next.disabled = !ctl || can.next === false;
     this.play.disabled = !ctl;
     const icon = m.playing ? 'pause' : 'play';
@@ -187,8 +180,6 @@ export class Infotainment {
     if (!m || !(m.duration > 0) || this.music.classList.contains('hidden')) return;
     const pos = Math.min(m.duration, (m.position || 0) + (m.playing ? (Date.now() - (m.at || Date.now())) * (m.speed || 1) : 0));
     this.bar.style.width = `${(pos / m.duration * 100).toFixed(2)}%`;
-    setText(this.elapsed, fmtTime(pos));
-    setText(this.total, fmtTime(m.duration));
   }
 
   // ---- navigation ----
@@ -234,15 +225,19 @@ export class Infotainment {
 
   // ---- layout and per frame ----
 
-  // the cards' heights for what stacks against them: the alerts under the nav card, the music card over
-  // the replay bar
+  // what stacks against what: the alerts under the nav card; along the bottom, the replay bar over the music, the open
+  // controls over the replay bar beside their button, and the road's name and the toasts over all of it
   layout() {
     const root = document.documentElement.style;
     const nav = this.navCard.classList.contains('hidden') ? 0 : this.navCard.offsetHeight;
     root.setProperty('--navcard-h', `${nav ? nav + 8 : 0}px`);
-    const rb = $('#replaybar');
-    if (rb.classList.contains('hidden') || !rb.offsetHeight) root.removeProperty('--music-bottom');
-    else root.setProperty('--music-bottom', `${Math.round(window.innerHeight - rb.getBoundingClientRect().top + 10)}px`);
+    const music = this.music.classList.contains('hidden') ? 0 : this.music.offsetHeight;
+    root.setProperty('--music-h', `${music ? music + 8 : 0}px`);
+    const rb = $('#replaybar'), btn = $('#btn-menu'), shown = (e) => !e.classList.contains('hidden') && e.offsetHeight > 0;
+    const top = Math.min(...[btn, this.music, rb].filter(shown).map(e => e.getBoundingClientRect().top));
+    const lift = shown(rb) ? btn.getBoundingClientRect().top - rb.getBoundingClientRect().top : 0;
+    root.setProperty('--dock-lift', `${Math.max(0, Math.round(lift))}px`);
+    root.setProperty('--bottom-h', `${Math.round(window.innerHeight - top + 8)}px`);
   }
 
   frame(dt) {

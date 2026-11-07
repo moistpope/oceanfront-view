@@ -5,6 +5,7 @@ import { $, $$, el, api, fmtBytes, fmtTime, prettyLabel, prettySignal, iconSvg }
 import { OCEAN_PAINTS, OCEAN_WHEELS, oceanPaint } from './models.js';
 import { RX_IDS } from './ibus_tables.js';
 import { CommaPanel } from './comma.js';
+import { GROUND_STYLES } from './groundstyle/index.js';
 
 // tab -> what it needs the comma for
 const OFFLINE_TABS = new Map([
@@ -302,11 +303,28 @@ export class Settings {
     const body = this.body;
     body.append(el('div.section', el('h3', 'Theme'),
       this.app.segmented([['auto', 'Auto'], ['light', 'Day'], ['dark', 'Night']], s.theme, v => set('theme', v))));
+    body.append(el('div.section', el('h3', 'Layout'),
+      el('p.desc', 'Wide strip: for a short band across the screen, like the HUD beside another app in split screen. The car in the ' +
+        'middle, only the speed, gear, steering, set speed and limit in the driver\'s corner and the battery and power in the other. Auto picks it ' +
+        'when the window is a band that leaves most of the screen\'s height to something else.'),
+      this.app.segmented([['auto', 'Auto'], ['standard', 'Standard'], ['wide', 'Wide strip']], s.layout || 'auto', v => set('layout', v))));
+    body.append(el('div.section', el('h3', 'Drum horizon'),
+      el('p.desc', 'In the wide strip: the road bends over a drum under the car and falls away ahead to a close horizon, as in the ' +
+        'Fisker concept\'s renders. The chase view sits lower to look over it. Flat again while the car controls are open.'),
+      this.app.segmented([['off', 'Flat'], ['on', 'Drum']], s.drum ? 'on' : 'off', v => set('drum', v === 'on'))));
+    body.append(el('div.section', el('h3', 'Ground style'),
+      el('p.desc', 'Prototypes after the Fisker Ocean concept: the scene as one surface fixed to the ground, which the road, its lines and ' +
+        'every car (yours included) push up from below, like a blanket. ' + GROUND_STYLES.map(g => g.blurb).filter(Boolean).join(' ') +
+        ' Opening the car controls shows the real car.'),
+      this.app.segmented(GROUND_STYLES.map(g => [g.id, g.label]), s.groundStyle || 'perforated', v => set('groundStyle', v))));
     body.append(el('div.section', el('h3', 'Speed units'),
       this.app.segmented([['auto', 'Follow cluster'], ['mph', 'mph'], ['kmh', 'km/h']], s.units, v => set('units', v))));
     body.append(el('div.section', el('h3', 'Traffic side'),
       el('p.desc', 'Which side of a two-way road to drive on. For the UK, choose Left.'),
       this.app.segmented([['auto', 'Follow car'], ['left', 'Left (UK)'], ['right', 'Right']], s.trafficSide || 'auto', v => set('trafficSide', v))));
+    body.append(el('div.section', el('h3', 'Driver\'s side'),
+      el('p.desc', 'The status card and the controls (the menu, what\'s playing, the replay) go on the driver\'s side, the energy card and the chips on the other. Follow traffic puts the driver on the right where traffic keeps left.'),
+      this.app.segmented([['auto', 'Follow traffic'], ['left', 'Left'], ['right', 'Right']], s.driverSide || 'auto', v => set('driverSide', v))));
     body.append(el('div.section', el('h3', 'Camera speed-sign units'),
       el('p.desc', 'Units of the number read from signs, before display conversion. Choose mph for UK signs if Follow car converts them incorrectly.'),
       this.app.segmented([['auto', 'Follow car'], ['mph', 'mph'], ['kmh', 'km/h']], s.cameraSignUnits || 'auto', v => set('cameraSignUnits', v))));

@@ -56,6 +56,68 @@ holds still when it isn't. Lane lines, stop lines, crosswalks and the headlight 
 same field, so they grow, bend and dissolve with the road. Ground texture and inferred road can be
 turned off under *Display*.
 
+*Ground style* (*Display*) swaps that ground for prototypes after the Fisker Ocean concept
+(`static/js/groundstyle/`). Perforated is the default; *Flat* keeps the plain ground described above.
+The styles work in two layers. The surface model (`surface.js`) is one sheet fixed to the ground that
+the road and every car (ours included, from its model's height map) push up from below. The road's shape is
+OceanScape's (github.com/benkayuk/oceanscape): a soft ridge along each lane line, dashed or not, our lane's two
+full height and the rest lower, and a broad berm along each edge, at their offsets across the road field's
+reference, so they bend, grow and fade with the road. The cars stand level over it, so a ridge passes under a car
+rather than bending it. It's baked each frame into a height field and is the same for every style. Each style
+(`styles/*.js`: pins, scanlines, perforated, point cloud) is one self-contained module that draws that field. It
+declares its own shaders, colors, light, and a profile of what it needs (how soft the cars' sides are, the painted
+lines raised crisp). Every style lights its surface with the lines' colors: their paint, a halo about 30 cm wide
+and a bloom about a metre wide. The light adds at night and tints by day. To add one, write a module and list it in `index.js`; the setting picks it up,
+and `groundstyle.test.js` checks it keeps to the contract.
+
+While a style is on, the road map takes the lines in the concept's colors, after OceanScape: our lane's
+two lines amber (blue while steering, red for a departure), and the other lines and the edges a dim amber
+(`surface.js CONCEPT_LINES`). The perforated style lights them from under the cloth, so they shine out
+through the perforations. A soft bar of light, 30 cm deep and as wide as the car, lies 30–60 cm behind the car we
+follow, colored by the time gap (green to red); it fades in and out over about a second as that car is gained or lost.
+Every 5 s a sonar pulse, an arc, leaves it and runs about 2 m out toward us, fading.
+The sheet reaches past where the fog has faded it into the background, and its far edges fade too, so
+the ground never ends in a line. Perforated's sky follows the view direction, so its horizon color
+meets the fogged ground at the real horizon.
+
+The blind-spot warning (`static/js/blindspot.js`) turns our lane's line on that side red along the car,
+fading out ahead of and behind it. With no line on that side, red ripples run out from the car's side.
+In the ground styles both go into the road map, so they glow like the lines.
+
+*Layout* (*Display*) has a wide strip for the HUD beside another app in split screen (the top third
+of the Ocean's portrait screen). *Auto* picks it when the window is at least 1.4 times as wide as
+it's tall and leaves most of the screen's height to something else (`main.js updateLayout`). The car
+sits in the middle of the strip, the status is pared down to the speed, gear, steering, set speed and
+limit, and the energy card to the battery and the power bar. In the wide strip the *Drum horizon* bends the whole
+3D view over a drum under the car (`static/js/drum.js`), so the road falls away to a close horizon as
+in the concept's renders. Every vertex shader is bent after its projection, so it needs nothing from
+the materials; orthographic renders (the ground styles' maps) and the sky stay flat. The ground, and
+what lies on it, fades into a thin haze over the last 2° below the drum's horizon, so it ends softly
+(`drum.js drumFade`).
+
+The status card (speed, gear, assist) sits on the driver's side with no panel behind it. Its mirror,
+the energy card, sits on the other side and shows:
+- the time, the battery's usable charge and range, and the outside temperature, read from the car's
+  own buses (`carstate.js`);
+- the power bar up its outer edge, the card's height.
+
+A tap on the bar shows the last minute at the card's foot. A tap on the charge opens *Battery &
+energy* (`energy.js`): the battery's figures over the VCU's energy counters. The chips sit under the
+energy card.
+
+The controls are on the driver's side too: one menu button at the bottom (`main.js bindViewdock`).
+Pressing it opens the settings, the comma camera and the camera views above it. It closes on a
+second press, a tap elsewhere, after a button has done its job, or after ten seconds left alone.
+
+What the head unit is playing runs along the bottom beside the button (`infotainment.js`), as on the
+concept boards. Play/pause and next sit next to the menu button, then the title, the artist and
+album, and a hairline of progress. At night it's type on the scene; by day it sits on a light veil.
+The buttons' icons are small, but each one's touch area is 76 × 72 px and reaches down to the screen's
+edge. In replay, the replay bar sits above it.
+
+*Driver's side* (*Display*) follows the traffic side by default: traffic on the left puts the driver
+on the right. The whole layout mirrors for a driver on the right (`app.css html.rhd`).
+
 Traffic lights, signs and road markings (`static/js/furniture.js`) come from the car's ADAS camera
 only; sunnypilot adds map speed limits (`liveMapDataSP`) but no signs or lights. The camera reports
 what it saw and, for lights and markings, how far ahead, never where across the road: the ego-lane

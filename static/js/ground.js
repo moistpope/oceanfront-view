@@ -19,6 +19,7 @@
 // Scene frame: X right, Y up, Z backward; the car frame (x ahead of the front bumper, y left) is
 // x = -Z, y = -X.
 import * as THREE from '../vendor/three.module.min.js';
+import { drumShader, DRUM_FADE_GLSL } from './drum.js';
 
 const EGO_LEN = 4.775;
 const DISC_R = 10, DISC_FADE = 5.5;    // m: the ground around the car with no road: radius, fade width
@@ -74,7 +75,7 @@ function noiseTexture(size, cells, octaves, gain, seed, anisotropy) {
 // The field, in GLSL. p: car frame point; g: ground coordinates (m, fixed to the ground) for the noise.
 const POLY_MAX = 64;
 
-const FIELD_GLSL = `
+export const FIELD_GLSL = `
 #define POLY_MAX ${POLY_MAX}
 uniform vec3 uArc;       // the road's reference arc in the car frame: y at the bumper, tan(heading), curvature
 uniform vec2 uPoly[POLY_MAX];   // ...or its reference polyline (car frame), with each point's station
@@ -178,7 +179,7 @@ export class RoadField {
       sh.vertexShader = 'varying vec2 vGround;\nvarying vec2 vCar;\n' + sh.vertexShader.replace('#include <begin_vertex>',
         '#include <begin_vertex>\nvGround = position.xz;\nvec4 scenePos = modelMatrix * vec4(transformed, 1.0);\nvCar = vec2(-scenePos.z, -scenePos.x);');
       sh.fragmentShader = 'varying vec2 vGround;\nvarying vec2 vCar;\nuniform sampler2D tGrain;\nuniform float uContrast;\nuniform vec3 uBg;\nuniform vec3 uRoad;\n' +
-        FIELD_GLSL + sh.fragmentShader.replace('#include <map_fragment>', `
+        'uniform vec2 uDrum;\n' + DRUM_FADE_GLSL + FIELD_GLSL + sh.fragmentShader.replace('#include <map_fragment>', `
         float grain = texture2D(tGrain, vGround / 2.0).r;
         float mid = texture2D(tField, vGround / 12.0 + vec2(0.37, 0.61)).r;
         float cloud = texture2D(tField, vGround / 48.0).r;
@@ -189,7 +190,9 @@ export class RoadField {
         float edge = fieldNoise(vGround);
         float lanes = (1.0 - smoothstep(-0.2, 0.2, lateralOut(sd))) * smoothstep(0.0, 1.0, -(roadDist(sd) + edge));
         diffuseColor.rgb = mix(diffuseColor.rgb, uRoad, lanes * uField.w);
-        diffuseColor.rgb = mix(uBg, diffuseColor.rgb, smoothstep(0.0, 1.0, -(smin(discDist(vCar), roadDist(sd), 0.8) + edge)));`);
+        diffuseColor.rgb = mix(uBg, diffuseColor.rgb, smoothstep(0.0, 1.0, -(smin(discDist(vCar), roadDist(sd), 0.8) + edge)));
+        diffuseColor.rgb = mix(diffuseColor.rgb, uBg, drumFade(vec3(-vCar.y, 0.0, -vCar.x)));   // and toward the drum's horizon`);
+      drumShader(sh);   // its own onBeforeCompile replaces the drum's (drum.js)
     };
     m.userData.uniforms = uniforms;
     return m;
@@ -203,9 +206,11 @@ export class RoadField {
       Object.assign(sh.uniforms, this.uniforms);
       sh.vertexShader = 'varying vec3 vFieldPos;\n' + sh.vertexShader.replace('#include <begin_vertex>',
         '#include <begin_vertex>\nvFieldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-      sh.fragmentShader = 'varying vec3 vFieldPos;\nuniform mat4 uGroundInv;\n' + FIELD_GLSL +
+      sh.fragmentShader = 'varying vec3 vFieldPos;\nuniform mat4 uGroundInv;\nuniform vec2 uDrum;\n' + DRUM_FADE_GLSL + FIELD_GLSL +
         sh.fragmentShader.replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
-        diffuseColor.a *= ${mode === 'road' ? 'roadAlpha' : 'groundAlpha'}(vec2(-vFieldPos.z, -vFieldPos.x), (uGroundInv * vec4(vFieldPos, 1.0)).xz);`);
+        diffuseColor.a *= ${mode === 'road' ? 'roadAlpha' : 'groundAlpha'}(vec2(-vFieldPos.z, -vFieldPos.x), (uGroundInv * vec4(vFieldPos, 1.0)).xz);
+        diffuseColor.a *= 1.0 - drumFade(vFieldPos);`);
+      drumShader(sh);   // its own onBeforeCompile replaces the drum's (drum.js)
     };
     material.customProgramCacheKey = () => 'roadfield-' + mode;
     material.needsUpdate = true;
