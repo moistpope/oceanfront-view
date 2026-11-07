@@ -77,7 +77,8 @@ vec3 heightNormal(vec2 p) {
   return normalize(vec3(heightAt(p - vec2(e, 0.0)) - heightAt(p + vec2(e, 0.0)), 2.0 * e, heightAt(p - vec2(0.0, e)) - heightAt(p + vec2(0.0, e))));
 }
 // the cars' paint over their footprints: rgb, and how much of a car is here
-vec4 vehPaint(vec2 p) {
+// (each loops over every car: the surface bakes both once a frame, CAR_BAKE, and the styles read the bakes)
+vec4 vehPaintLoop(vec2 p) {
   vec3 c = vec3(0.0); float m = 0.0;
   for (int i = 0; i < MAX_VEH; i++) {
     if (i >= uNVeh) break;
@@ -89,7 +90,7 @@ vec4 vehPaint(vec2 p) {
 // ...only the cars painted for a reason (the one we follow, a threat), spread softly over their skirts: a car otherwise
 // is the cloth itself, the same color as the road around it
 uniform float uVehP[MAX_VEH];   // 1 painted
-vec4 vehTint(vec2 p) {
+vec4 vehTintLoop(vec2 p) {
   vec3 c = vec3(0.0); float m = 0.0;
   for (int i = 0; i < MAX_VEH; i++) {
     if (i >= uNVeh) break;
@@ -97,6 +98,24 @@ vec4 vehTint(vec2 p) {
     c += uVehC[i] * w; m += w;
   }
   return m > 0.0 ? vec4(c / m, min(m, 1.0)) : vec4(0.0);
+}
+#ifndef CAR_BAKE
+uniform sampler2D tCarPaint, tCarTint;   // vehPaintLoop and vehTintLoop, baked over the road map's area
+#endif
+vec4 carMap(sampler2D t, vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec4(0.0) : textureLod(t, uv, 0.0); }
+vec4 vehPaint(vec2 p) {
+#ifdef CAR_BAKE
+  return vehPaintLoop(p);
+#else
+  return carMap(tCarPaint, p);
+#endif
+}
+vec4 vehTint(vec2 p) {
+#ifdef CAR_BAKE
+  return vehTintLoop(p);
+#else
+  return carMap(tCarTint, p);
+#endif
 }
 float tailAt(vec2 p) { return hTex(p).g; }
 // the lines' light spread about 30 cm around them, in their colors at their strengths (surface.js, for a profile with

@@ -137,6 +137,19 @@ void main() {
   float h = heightAt(p);
   gl_FragColor = vec4(shadowMarch(p, h), aoMarch(p, h), 0.0, 1.0);
 }`;
+// the cars' paint and the tint of the ones painted for a reason, over the road map's area (glsl.js vehPaintLoop,
+// vehTintLoop), baked once a frame so no style loops over every car for every pixel or pin
+const CAR_FS = `
+${SURFACE_GLSL}
+varying vec2 vUv;
+void main() {
+  vec2 p = vec2(mix(uDefB.x, uDefB.y, vUv.x), mix(uDefB.w, uDefB.z, vUv.y));
+#ifdef TINT
+  gl_FragColor = vehTintLoop(p);
+#else
+  gl_FragColor = vehPaintLoop(p);
+#endif
+}`;
 const QUAD_VS = `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 const BAKE_FS = `
 ${SURFACE_GLSL}
@@ -216,6 +229,9 @@ export class GroundSurface {
     // aoMarch) at 16 cm, which the styles read instead of marching the height field for every pixel
     this.lightRT = new THREE.WebGLRenderTarget(LIGHT_W, LIGHT_H, { depthBuffer: false });
     this.lightRT.texture.minFilter = this.lightRT.texture.magFilter = THREE.LinearFilter;
+    // ...and the cars' paint and tint over it, at the light map's 16 cm
+    this.carPaintRT = new THREE.WebGLRenderTarget(LIGHT_W, LIGHT_H, { depthBuffer: false });
+    this.carTintRT = new THREE.WebGLRenderTarget(LIGHT_W, LIGHT_H, { depthBuffer: false });
 
     // the model's uniforms and the light rig's, shared by every style's materials (with the road field's, ground.js)
     this.uniforms = Object.assign({
@@ -223,7 +239,7 @@ export class GroundSurface {
       uVehP: { value: new Float32Array(MAX_VEH) },
       uNVeh: { value: 0 }, uDrape: { value: DEFAULT_PROFILE.drape }, tEgo: { value: egoTex }, uEgoOn: { value: 0 }, uEgoSharp: { value: 0 },
       tDef: { value: this.defRT.texture }, tHeight: { value: this.heightRT.texture }, tCov: { value: this.covRT.texture },
-      tLight: { value: this.lightRT.texture },
+      tLight: { value: this.lightRT.texture }, tCarPaint: { value: this.carPaintRT.texture }, tCarTint: { value: this.carTintRT.texture },
       tGlow: { value: this.glowRT[1].texture }, tBloom: { value: this.bloomRT[1].texture }, uDark: { value: 0 },
       uDefB: { value: new THREE.Vector4(DEF.x0, DEF.x1, DEF.z0, DEF.z1) }, uLineH: { value: LINE_H }, uCrisp: { value: 0 },
       uRidgeD: { value: Array.from({ length: RIDGE_MAX }, () => new THREE.Vector2()) }, uRidgeS: { value: new Float32Array(RIDGE_MAX).fill(0.5) },
@@ -237,6 +253,9 @@ export class GroundSurface {
     this.bakeScene = fullscreen(new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: BAKE_FS, uniforms: this.uniforms, depthTest: false, depthWrite: false }));
     this.lightScene = fullscreen(new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: LIGHT_FS, uniforms: this.uniforms,
       defines: { LIGHT_BAKE: 1 }, depthTest: false, depthWrite: false }));
+    const carMat = (defines) => new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: CAR_FS, uniforms: this.uniforms, defines, depthTest: false, depthWrite: false });
+    this.carPaintScene = fullscreen(carMat({ CAR_BAKE: 1 }));
+    this.carTintScene = fullscreen(carMat({ CAR_BAKE: 1, TINT: 1 }));
     this.lead = null;           // the car we follow this frame: { X, Z (scene), fx, fz (its heading), l, w (half length, half width), gap (m), a }
     this._swaps = new Map();    // line colors -> the materials they recolor (_colors)
     this._c = new THREE.Color();
@@ -301,7 +320,7 @@ export class GroundSurface {
     this._cars();
     sc.world.updateMatrixWorld(true);
     U.uWorldInv.value.copy(sc.world.matrixWorld).invert();
-    this._render(profile.halo, lines);
+    this._render(profile.halo, lines, profile.crisp);
   }
 
   // The road's ridges (after OceanScape): one along each lane line at its offset across the road field's reference (the
@@ -386,7 +405,7 @@ export class GroundSurface {
 
   // The road map (in the style's line colors) and the coverage map, the halo's Gaussian if the profile asks for it,
   // then the height field from them and the cars.
-  _render(halo, lines) {
+  _render(halo, lines, crisp) {
     const R = this.sc.renderer, scene = this.sc.scene;
     const prevTarget = R.getRenderTarget(), prevBg = scene.background;
     R.getClearColor(this._c);
@@ -398,11 +417,13 @@ export class GroundSurface {
     R.clear();
     R.render(scene, this.defCam);
     if (lines) this._colors(lines, false);
-    scene.overrideMaterial = this.covMat;
-    R.setRenderTarget(this.covRT);
-    R.clear();
-    R.render(scene, this.covCam);
-    scene.overrideMaterial = null;
+    if (crisp) {   // the lines' coverage, only for a style that draws them crisp (carCrisp); the rest never read it
+      scene.overrideMaterial = this.covMat;
+      R.setRenderTarget(this.covRT);
+      R.clear();
+      R.render(scene, this.covCam);
+      scene.overrideMaterial = null;
+    }
     if (halo) {
       // the halo from the road map's colors, then the bloom from the halo, with taps twice as far apart
       const B = this.blurMat.uniforms;
@@ -422,6 +443,10 @@ export class GroundSurface {
     R.render(this.bakeScene, this.bakeCam);
     R.setRenderTarget(this.lightRT);
     R.render(this.lightScene, this.bakeCam);
+    R.setRenderTarget(this.carPaintRT);
+    R.render(this.carPaintScene, this.bakeCam);
+    R.setRenderTarget(this.carTintRT);
+    R.render(this.carTintScene, this.bakeCam);
     R.setRenderTarget(prevTarget);
     R.setClearColor(this._c, prevAlpha);
     scene.background = prevBg;
