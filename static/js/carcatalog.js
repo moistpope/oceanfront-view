@@ -50,6 +50,7 @@ const OWNED = 'The head unit sends this setting itself every second; a request o
 const NO_MSG = 'The car has no message for this';
 const MOCK = 'Mockup: nothing on the car for this';
 const ADAS = 'Set under the gear menu → CAN settings (the comma sends the driver-assistance settings)';
+const BSD_FIXED = 'Always on, with visual warnings: the comma pins it (another setting turned blind spot detection off)';
 
 const T = (id, label, def, sub, x = {}) => ({ id, type: 'toggle', label, def, sub, ...x });
 const S = (id, label, options, def, sub, x = {}) => ({ id, type: 'seg', label, options, def, sub, ...x });
@@ -262,8 +263,9 @@ export const CATEGORIES = [
       {
         title: 'Blind spot',
         controls: [
-          S('icc.bsd', 'Blind spot (BSD)', ALERT_LEVELS, 2, null, { off: ADAS }),                                           // ICC_BSDSetting
-          S('icc.bsdSens', 'Timing', SENSITIVITY, 0, null, { off: ADAS }),                                                  // ICC_BSD_Sensitivity
+          // the comma pins BSD to 1 (Visual) and passes its timing through (relayed as 3, "+ Vibration", the ADAS turned BSD off: Nov 2 log)
+          S('icc.bsd', 'Blind spot (BSD)', ALERT_LEVELS.slice(0, 3), 1, null, { off: BSD_FIXED }),                          // ICC_BSDSetting
+          S('icc.bsdSens', 'Timing', SENSITIVITY, 0, null, { off: BSD_FIXED }),                                             // ICC_BSD_Sensitivity
           S('icc.dow', 'Door open warning (DOW)', [[0, 'Off'], [1, 'Visual'], [2, '+ Sound']], 2, null, { off: ADAS }),     // ICC_DOW_Setting
         ],
       },
@@ -539,7 +541,7 @@ export const CATEGORIES = [
     id: 'software', label: 'Software', icon: 'download', system: true,
     sections: [
       // this app: its version and its updates from the repository's releases (appupdate.js)
-      { kind: 'app', title: 'Oceanfront View' },
+      { kind: 'app', title: 'Oceanscape' },
       {
         title: 'FiskerOS',
         controls: [

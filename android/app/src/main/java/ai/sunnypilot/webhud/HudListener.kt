@@ -31,7 +31,9 @@ import kotlin.concurrent.thread
  * notifications; the app turns itself on as one through root ([grant]).
  *
  * Media: every active session is followed, and the card shows the one playing (else the most recent).
- * Navigation: a notification in the navigation category, or an ongoing one from a known navigation app.
+ * Navigation: a notification in the navigation category, or an ongoing one from a known navigation app
+ * (ABRP's only while it gives a distance: it keeps one up while it isn't guiding too). With more than one
+ * (Google Maps and ABRP both guiding), the most recently updated shows, and the next when it goes.
  * Every notification's app and category is logged (not its words), so `adb logcat -s WebHud` shows
  * which app on the head unit gives the turns, should it be none of these.
  */
@@ -40,7 +42,8 @@ class HudListener : NotificationListenerService() {
     private val main = Handler(Looper.getMainLooper())
     private val sessions = HashMap<MediaSession.Token, Pair<MediaController, MediaController.Callback>>()
     private var showing: MediaController? = null
-    private var navKey: String? = null
+    /** The navigation notifications up now, by key, the most recently posted last: what each sent, and its picture. */
+    private val navs = LinkedHashMap<String, Pair<JSONObject, String?>>()
 
     private val manager get() = getSystemService(MediaSessionManager::class.java)
     private val me get() = ComponentName(this, HudListener::class.java)
@@ -62,16 +65,20 @@ class HudListener : NotificationListenerService() {
         Log.i(TAG, "notification listener disconnected")
         manager.removeOnActiveSessionsChangedListener(sessionsChanged)
         follow(emptyList())
-        navKey = null
+        navs.clear()
         Infotainment.setNav(null, null)
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) = posted(sbn)
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (sbn.key != navKey) return
-        navKey = null
-        Infotainment.setNav(null, null)
+        if (navs.remove(sbn.key) != null) publishNav()
+    }
+
+    /** The most recent navigation notification, else none. */
+    private fun publishNav() {
+        val (j, icon) = navs.values.lastOrNull() ?: (null to null)
+        Infotainment.setNav(j, icon)
     }
 
     // ---- media ------------------------------------------------------------------------------------
@@ -160,6 +167,14 @@ class HudListener : NotificationListenerService() {
         if (!nav) return
         val x = n.extras
         val text = { key: String -> x.getCharSequence(key)?.toString().orEmpty() }
+        val lines = x.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.joinToString("\n") { it.toString() }.orEmpty()
+        // an app that keeps its notification up while not guiding counts only while it gives the next turn's distance
+        if (sbn.packageName in GUIDANCE_ONLY && !hasDistance(listOf(Notification.EXTRA_TITLE, Notification.EXTRA_TEXT,
+                Notification.EXTRA_BIG_TEXT, Notification.EXTRA_SUB_TEXT).map(text) + lines)) {
+            Log.d(TAG, "navigation: ${sbn.packageName} isn't guiding (no distance); its extras: ${x.keySet().sorted()}")
+            if (navs.remove(sbn.key) != null) publishNav()
+            return
+        }
         val j = JSONObject()
             .put("pkg", sbn.packageName)
             .put("app", label(sbn.packageName))
@@ -168,6 +183,7 @@ class HudListener : NotificationListenerService() {
             .put("subText", text(Notification.EXTRA_SUB_TEXT))
             .put("bigText", text(Notification.EXTRA_BIG_TEXT))
             .put("info", text(Notification.EXTRA_INFO_TEXT))
+            .put("lines", lines)
             .put("at", sbn.postTime)
         Log.d(TAG, "navigation: ${j.optString("title")} | ${j.optString("text")} | ${j.optString("subText")}")
         // the turn's picture (Google Maps draws the maneuver as the large icon)
@@ -177,8 +193,9 @@ class HudListener : NotificationListenerService() {
             null
         }
         j.put("iconKey", icon?.hashCode()?.toString() ?: "")
-        navKey = sbn.key
-        Infotainment.setNav(j, icon)
+        navs.remove(sbn.key)
+        navs[sbn.key] = j to icon
+        publishNav()
     }
 
     // ---- helpers ----------------------------------------------------------------------------------
@@ -211,7 +228,16 @@ class HudListener : NotificationListenerService() {
         val NAV_APPS = setOf(
             "com.google.android.apps.maps", "com.waze", "com.here.app.maps", "com.sygic.aura",
             "net.osmand", "net.osmand.plus", "com.mapquest.android.ace", "app.organicmaps",
+            "com.iternio.abrpapp",
         )
+
+        /** Navigation apps whose ongoing notification stays up while they aren't guiding (ABRP: planning, live data). */
+        val GUIDANCE_ONLY = setOf("com.iternio.abrpapp")
+
+        private val DISTANCE = Regex("""\d+(?:[.,]\d+)?\s*(?:miles?|mi|feet|foot|ft|yards?|yds?|km|met(?:er|re)s?|m)(?![\p{L}])""", RegexOption.IGNORE_CASE)
+
+        /** Whether any of [texts] gives a distance ("300 m", "0.4 mi", "1,2 km"): a turn being guided to. */
+        fun hasDistance(texts: List<String>) = texts.any { DISTANCE.containsMatchIn(it) }
 
         fun allowed(context: Context): Boolean {
             val me = ComponentName(context, HudListener::class.java)

@@ -118,7 +118,7 @@ class AppUpdater(private val context: Context, private val root: RootShell, priv
         connectTimeout = 15_000
         readTimeout = 30_000
         instanceFollowRedirects = true   // the asset redirects to GitHub's object storage, https to https
-        setRequestProperty("User-Agent", "OceanfrontView/${installed().versionName} (Android)")
+        setRequestProperty("User-Agent", "Oceanscape/${installed().versionName} (Android)")
     }
 
     private fun get(url: String): String {

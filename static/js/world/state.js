@@ -9,7 +9,7 @@ import { hexToBytes } from './dbc.js';
 import { FiskerRadar } from './fisker_radar.js';
 import { PoseEstimator } from './pose.js';
 import { MapMatcher } from './mapmatch.js';
-import { lanesOf, laneLayout, LANE_W } from './roaddetail.js';
+import { lanesOf, laneLayout, widthOf, singleTrack, LANE_W } from './roaddetail.js';
 
 /** A bridge tick's frames, [[address, bus, hex], ...], as the builder takes them. */
 export function wireFrames(frames) {
@@ -34,6 +34,7 @@ const DEVICE_LAG_S = [0.05, 2.0];
 // the roads around the car for the view's map layer: every drivable way within ROADS_R, rebuilt once the car has
 // moved ROADS_STEP from the last build (or the tiles changed), and sent only then
 const ROADS_R = 320, ROADS_STEP = 40;
+const SINGLE_TRACK_M = 4.2;   // m: an Ordnance Survey carriageway narrower than this is a single-track road (two cars can't pass)
 // the map's point features (mapdata.js feature cells) that ride along in the layer, by their OSM tag
 const FEATURE_KINDS = { traffic_signals: 'signal', stop: 'stop', give_way: 'yield', crossing: 'crossing', mini_roundabout: 'miniRoundabout' };
 const FEAT_MAX = 160;         // nearest first
@@ -284,7 +285,7 @@ export class StateBuilder {
    *  true when rebuilt this call. */
   _roadsLayer(x, y) {
     const r = this._roads;
-    const mapVersion = this.map.version + ':' + this.map.featVersion;
+    const mapVersion = this.map.version + ':' + this.map.featVersion + ':' + (this.map.surfVersion || 0);
     if (r && r.mapVersion === mapVersion && Math.hypot(x - r.cx, y - r.cy) < ROADS_STEP) return false;
     const R = ROADS_R, x0 = x - R, x1 = x + R, y0 = y - R, y1 = y + R;
     const ways = [];
@@ -305,20 +306,23 @@ export class StateBuilder {
       const way = w.way;
       // the carriageway with the way's nodes: fwd lanes on the traffic side of its centerline, bwd on the other (roaddetail.js)
       const L = laneLayout(way, 1), B = laneLayout(way, -1);
-      // a single-track road (two-way, one lane: passing places): one lane wide, no center line
-      const d = way.detail, single = !way.oneWay && (way.lanes === 1 || (d && d.lanes === 1));
-      const width = single ? (d && d.width >= 2.4 && d.width <= 5 ? d.width : LANE_W) : L.width;
+      // a single-track road (two-way, one lane: passing places): one lane wide, no center line (roaddetail.js singleTrack)
+      const single = singleTrack(way);
+      const dw = widthOf(way), width = single ? (dw >= 2.4 && dw <= 5 ? dw : LANE_W) : L.width;
       ways.push({ id: way.id, cls: way.cls, className: way.className, name: way.name, ref: way.ref, lanes: L.lanes, oneWay: !!way.oneWay,
         maxSpeed: way.maxSpeed || 0,
         width: r1(width), singleTrack: single, laneW: Math.round(L.laneW * 100) / 100, fwd: L.ours, bwd: L.theirs, centre: L.centre, detailed: L.detailed,
         turnsFwd: L.turns, turnsBwd: way.oneWay ? null : B.turns,
         passFwd: way.detail ? way.detail.passFwd : null, passBwd: way.detail ? way.detail.passBwd : null,
-        markings: way.detail ? way.detail.markings : null, pts });
+        markings: way.detail ? way.detail.markings : null, roundabout: !!(way.detail && way.detail.roundabout), pts });
     }
     mergeCopies(ways);
     const features = this._features(x, y, R, near);
     const version = ++this._roadsSeq;
-    this._roads = { version, cx: x, cy: y, mapVersion, layer: { version, cx: Math.round(x), cy: Math.round(y), r: R, ways, features } };
+    // Ordnance Survey's surveyed road surfaces around (osroads.js): [{kind, rings: [[[x, y], ...], ...]}]
+    const surfaces = this.map.surfacesNear ? this.map.surfacesNear(x, y, R).map(p => ({ kind: p.kind,
+      rings: p.xy.map(xy => { const ring = []; for (let i = 0; i < xy.length; i += 2) ring.push([r1(xy[i]), r1(xy[i + 1])]); return ring; }) })) : [];
+    this._roads = { version, cx: x, cy: y, mapVersion, layer: { version, cx: Math.round(x), cy: Math.round(y), r: R, ways, features, surfaces } };
     return true;
   }
 

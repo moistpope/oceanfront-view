@@ -47,7 +47,7 @@ const TURN_W = 0.12;              // rad/s of yaw that counts as turning
 const TURN_LOOKAHEAD_S = 1.5;     // the heading the car will have this much later picks the branch
 const TURN_MATCH = 55 * DEG;      // ...if one lies within this of it
 const TURN_MIN = 25 * DEG;        // a branch turning less than this isn't a turn
-const TURN_HOLD_S = 2.0;          // a choice made is kept this long (the indicator cancels, the yaw eases)
+const TURN_HOLD_S = 2.0;          // a choice made is kept this long (the indicator cancels, the yaw eases), unless the car yaws the other way
 const INDICATE_MAX_V = 15.0;      // m/s: above this an indicator alone (no yaw yet) means a lane change, not a turn
 const END_TURN_MIN = 30 * DEG;    // a continuation turning more than this at our road's end gets its corner rounded like an arm's
 
@@ -157,8 +157,14 @@ export class MapMatcher {
   _turning(fresh) {
     const { h, v, w, turn, now } = this.ctx;
     if (this.turnPick && now < this.turnPick.until) {
-      const held = fresh.find(o => o.tileKey + ':' + o.wi + ':' + o.odir === this.turnPick.key);
-      if (held) return held;
+      // yawing the other way isn't that turn: Whitehall's jog round the island by Great Scotland Yard yawed the car left,
+      // then right, and the held left turn took the map line down the Yard as the car passed it
+      const side = this.turnPick.side;
+      if (Math.sign(w) === -side && Math.abs(w) > TURN_W && turn !== side) this.turnPick = null;
+      else {
+        const held = fresh.find(o => o.tileKey + ':' + o.wi + ':' + o.odir === this.turnPick.key);
+        if (held) return held;
+      }
     }
     const yawing = Math.abs(w) > TURN_W && v > 1.0;
     const want = (turn && v < INDICATE_MAX_V ? turn : 0) || (yawing ? Math.sign(w) : 0);   // at speed an indicator is a lane change
@@ -171,7 +177,7 @@ export class MapMatcher {
       if (c < cost) { cost = c; best = o; }
     }
     if (!best || (yawing && cost > TURN_MATCH)) return null;
-    this.turnPick = { key: best.tileKey + ':' + best.wi + ':' + best.odir, until: now + TURN_HOLD_S };
+    this.turnPick = { key: best.tileKey + ':' + best.wi + ':' + best.odir, until: now + TURN_HOLD_S, side: want };
     return best;
   }
 

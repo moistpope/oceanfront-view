@@ -15,6 +15,7 @@
 // road where its coordinate is a node of the road's way (the same OSM node), which state.js matches up.
 import { decodeTile, tileFor } from './osmtile.js';
 import { wayDetail } from './roaddetail.js';
+import { parseLinks, parseSurfaces, LinkIndex, wayWidth, snapNodes, denseOnto } from './osroads.js';
 
 const DEG = Math.PI / 180;
 const EARTH_R = 6378137.0;
@@ -26,6 +27,8 @@ const RETRY_S = 15;           // after a failed fetch
 export const FEAT_DEG = 0.05; // feature cells: ~5.5 x 4.6 km here
 const FEAT_PREFETCH_M = 1500; // load the feature cells within this of the car
 const FEAT_CACHE = 40;
+const OS_CACHE = 16;          // Ordnance Survey cells kept in memory (a city cell's surfaces are tens of thousands of polygons)
+const OS_RETRY_S = 60;        // an Ordnance Survey cell that failed (no key, over the cap, out of GB) isn't asked for again sooner
 // the server is asked to download the whole map within `prefetchKm` of the car (road tiles and features, kept on
 // disk) whenever the car has moved PREFETCH_MOVE_M since the last ask, or PREFETCH_EVERY_S have passed
 const PREFETCH_EVERY_S = 120, PREFETCH_MOVE_M = 3000;
@@ -52,6 +55,9 @@ export class MapData {
     this.version = 0;            // bumps when the index changes
     this.featureCells = new Map(); // "klat,klon" -> {key, nodes: [{id, lat, lon, tags, x, y}], at, loading, failedAt}
     this.featVersion = 0;        // bumps when the loaded features change
+    this.fetchOs = null;         // (klat, klon) -> Ordnance Survey road links of a FEAT_DEG cell (osroads.js), when that source is on
+    this.osCells = new Map();    // "klat,klon" -> {key, klat, klon, links, at, loading, failedAt, surf: {polys | null, loading, failedAt}}
+    this.surfVersion = 0;        // bumps when the loaded road surfaces change
   }
 
   // ---- frame ------------------------------------------------------------------------------------
@@ -66,6 +72,8 @@ export class MapData {
     this._reindex();
     for (const c of this.featureCells.values()) if (c.nodes) this._projectFeatures(c);
     this.featVersion++;
+    for (const c of this.osCells.values()) if (c.surf && c.surf.polys) this._projectSurfaces(c);
+    this.surfVersion++;
   }
 
   toLocal(lat, lon) {
@@ -98,6 +106,7 @@ export class MapData {
     const e = this.tiles.get(keyOf(here));
     if (e) e.at = now;
     this._wantFeatures(lat, lon, now);
+    this._wantOs(lat, lon, now);
     this._askPrefetch(lat, lon, now);
     return !!(e && e.tile);
   }
@@ -130,7 +139,11 @@ export class MapData {
       e.tile = decodeTile(bytes);
       e.failedAt = null;
       this._detail(e);
-      if (this.origin) { this._project(e); this._reindex(); }
+      const moved = this._osApply([e], null, false);
+      if (this.origin) {
+        this._project(e); this._reindex();
+        if (moved) this._projectFeaturesIn(e.tile.minLat, e.tile.minLon, e.tile.maxLat, e.tile.maxLon);
+      }
       this._evict();
     }, (err) => { e.loading = false; e.failedAt = now; e.error = String(err && err.message || err); });
     this.pending.set(key, p);
@@ -196,6 +209,221 @@ export class MapData {
     return true;
   }
 
+  // ---- Ordnance Survey widths (osroads.js) -----------------------------------------------------
+
+  /** Turn the Ordnance Survey road widths on (fetchOs(klat, klon) -> a cell {links} or null) or off (null). */
+  setOs(fetchOs) {
+    if (fetchOs === this.fetchOs) return;
+    this.fetchOs = fetchOs;
+    this.osCells.clear();
+    this.surfVersion++;
+    this.osShift = null;
+    let any = false, moved = false;
+    for (const e of this.tiles.values()) if (e.tile) for (const way of e.tile.ways) {
+      if (way.osWidth != null) { way.osWidth = null; any = true; }
+      way.osDense = null;
+      if (way.nodes0) { way.nodes = way.nodes0; way.nodes0 = null; moved = true; }
+    }
+    if (moved && this.origin) {
+      for (const e of this.tiles.values()) if (e.tile) this._project(e);
+      this._reindex();
+      for (const c of this.featureCells.values()) if (c.nodes) this._projectFeatures(c);
+      this.featVersion++;
+    }
+    if (any || moved) this.version++;
+  }
+
+  _wantOs(lat, lon, now) {
+    if (!this.fetchOs) return;
+    const fetchOs = this.fetchOs;
+    const dLat = FEAT_PREFETCH_M / (DEG * EARTH_R), dLon = FEAT_PREFETCH_M / (DEG * EARTH_R * Math.cos(lat * DEG));
+    const k0 = Math.floor((lat - dLat) / FEAT_DEG), k1 = Math.floor((lat + dLat) / FEAT_DEG);
+    const l0 = Math.floor((lon - dLon) / FEAT_DEG), l1 = Math.floor((lon + dLon) / FEAT_DEG);
+    for (let k = k0; k <= k1; k++) for (let l = l0; l <= l1; l++) {
+      const key = k + ',' + l;
+      let c = this.osCells.get(key);
+      if (!c) { c = { key, klat: k, klon: l, links: null, at: now, loading: false, failedAt: null, surf: { polys: null, loading: false, failedAt: null } }; this.osCells.set(key, c); }
+      this._wantSurfaces(c, fetchOs, now);
+      if (c.links || c.loading || (c.failedAt != null && now - c.failedAt < OS_RETRY_S)) { c.at = now; continue; }
+      c.loading = true;
+      const p = Promise.resolve().then(() => fetchOs(k, l)).then((cell) => {
+        c.loading = false;
+        if (this.fetchOs !== fetchOs) return;   // turned off (or the key changed) meanwhile
+        if (!cell || !Array.isArray(cell.links)) { c.failedAt = now; return; }
+        c.links = parseLinks(cell);
+        c.failedAt = null;
+        this._osApply([...this.tiles.values()], c);
+        this._evictOs();
+      }, (err) => { c.loading = false; c.failedAt = now; c.error = String(err && err.message || err); });
+      this.pending.set('os:' + key, p);
+      p.finally(() => this.pending.delete('os:' + key));
+    }
+  }
+
+  /** The cell's road surfaces (fetchOs.surface), when the fetcher has them. */
+  _wantSurfaces(c, fetchOs, now) {
+    const f = c.surf;
+    if (!fetchOs.surface || f.polys || f.loading || (f.failedAt != null && now - f.failedAt < OS_RETRY_S)) return;
+    f.loading = true;
+    const p = Promise.resolve().then(() => fetchOs.surface(c.klat, c.klon)).then((cell) => {
+      f.loading = false;
+      if (this.fetchOs !== fetchOs) return;
+      if (!cell || !Array.isArray(cell.polys)) { f.failedAt = now; return; }
+      f.polys = parseSurfaces(cell);
+      f.failedAt = null;
+      if (this.origin) this._projectSurfaces(c);
+      this.surfVersion++;
+    }, (err) => { f.loading = false; f.failedAt = now; f.error = String(err && err.message || err); });
+    this.pending.set('ossurf:' + c.key, p);
+    p.finally(() => this.pending.delete('ossurf:' + c.key));
+  }
+
+  /** Put a cell's road surfaces in directly (tests and tools): polys as the server sends them. */
+  addOsSurfaces(klat, klon, polys, now = 0) {
+    const key = klat + ',' + klon;
+    let c = this.osCells.get(key);
+    if (!c) { c = { key, klat, klon, links: null, at: now, loading: false, failedAt: null, surf: null }; this.osCells.set(key, c); }
+    c.surf = { polys: parseSurfaces({ polys }), loading: false, failedAt: null };
+    if (this.origin) this._projectSurfaces(c);
+    this.surfVersion++;
+  }
+
+  /** Each surface's rings in the frame (xy: [Float64Array x0, y0, ...]) with its box. */
+  _projectSurfaces(c) {
+    for (const p of c.surf.polys) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      p.xy = p.rings.map((ring) => {
+        const xy = new Float64Array(ring.length);
+        for (let i = 0; i < ring.length; i += 2) {
+          const [x, y] = this.toLocal(ring[i], ring[i + 1]);
+          xy[i] = x; xy[i + 1] = y;
+          if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+        return xy;
+      });
+      p.box = [minX, minY, maxX, maxY];
+    }
+  }
+
+  /** The road surfaces whose box comes within r of (x, y): [{kind, xy: [Float64Array], box}]. */
+  surfacesNear(x, y, r) {
+    const out = [];
+    for (const c of this.osCells.values()) {
+      if (!c.surf || !c.surf.polys) continue;
+      for (const p of c.surf.polys) if (p.box && p.box[0] <= x + r && p.box[2] >= x - r && p.box[1] <= y + r && p.box[3] >= y - r) out.push(p);
+    }
+    return out;
+  }
+
+  /** Put an Ordnance Survey cell in directly (tests and tools): links as the server sends them. */
+  addOsCell(klat, klon, links, now = 0) {
+    const key = klat + ',' + klon;
+    const old = this.osCells.get(key);
+    const c = { key, klat, klon, links: parseLinks({ links }), at: now, loading: false, failedAt: null, surf: old ? old.surf : null };
+    this.osCells.set(key, c);
+    this._osApply([...this.tiles.values()], c);
+  }
+
+  /** Give the ways of these tiles that lie in loaded OS cells their width (way.osWidth), and move them onto OS's
+   *  centrelines (way.nodes0 keeps OSM's nodes): each node by osroads.js snapNodes, and points put between nodes far
+   *  apart by denseOnto (way.osDense), so a long straight follows OS's bend. A node several ways share moves by the
+   *  mean of their moves, in every way that has it, so junctions stay joined; the point features on OSM's nodes move
+   *  with them (this.osShift, _projectFeatures). With `cell` (one that just arrived), only the ways reaching into it
+   *  are looked at; the rest keep what earlier cells gave them. Says whether any way changed; with `project`, the
+   *  changed tiles and the features near them are projected again. */
+  _osApply(entries, cell = null, project = true) {
+    const cells = [...this.osCells.values()].filter(c => c.links);
+    if (!cells.length) return false;
+    let s = Infinity, w = Infinity, n = -Infinity, e = -Infinity;
+    for (const c of cell ? [cell] : cells) {
+      s = Math.min(s, c.klat * FEAT_DEG); n = Math.max(n, (c.klat + 1) * FEAT_DEG);
+      w = Math.min(w, c.klon * FEAT_DEG); e = Math.max(e, (c.klon + 1) * FEAT_DEG);
+    }
+    const index = new LinkIndex((s + n) / 2, (w + e) / 2);
+    // the links of the cells around the box too: a way reaching out of it still matches along its whole length
+    for (const c of cells) {
+      if (c.klat * FEAT_DEG > n + FEAT_DEG || (c.klat + 1) * FEAT_DEG < s - FEAT_DEG) continue;
+      if (c.klon * FEAT_DEG > e + FEAT_DEG || (c.klon + 1) * FEAT_DEG < w - FEAT_DEG) continue;
+      index.add(c.links);
+    }
+    const covered = (lat, lon) => this.osCells.get(Math.floor(lat / FEAT_DEG) + ',' + Math.floor(lon / FEAT_DEG))?.links != null;
+    const moves = new Map();   // OSM node "lat,lon" -> [sum dLat, sum dLon, count]
+    const inBox = [];          // [entry, way]
+    let widened = false;
+    for (const t of entries) {
+      if (!t.tile) continue;
+      for (const way of t.tile.ways) {
+        if (way.maxLat < s || way.minLat > n || way.maxLon < w || way.minLon > e) continue;
+        const orig = way.nodes0 || way.nodes;
+        inBox.push([t, way]);
+        const width = way.cls === 0 ? null : wayWidth(orig, index, covered, way.oneWay);
+        if (width !== (way.osWidth ?? null)) { way.osWidth = width; widened = true; }
+        way.osDense = null;
+        if (width == null) continue;
+        for (const [i, dLat, dLon] of snapNodes(orig, index, covered, way.oneWay)) {
+          const k = orig[2 * i] + ',' + orig[2 * i + 1];
+          const m = moves.get(k);
+          if (m) { m[0] += dLat; m[1] += dLon; m[2]++; } else moves.set(k, [dLat, dLon, 1]);
+        }
+        const dense = denseOnto(orig, index, covered, way.oneWay);
+        if (dense.length) way.osDense = dense;
+      }
+    }
+    if (!this.osShift) this.osShift = new Map();
+    for (const [k, m] of moves) this.osShift.set(k, [m[0] / m[2], m[1] / m[2]]);
+    const changed = new Set();
+    for (const [t, way] of inBox) {
+      const orig = way.nodes0 || way.nodes;
+      const dense = way.osDense;
+      let moved = !!dense;
+      if (!moved) for (let i = 0; i < orig.length && !moved; i += 2) moved = this.osShift.has(orig[i] + ',' + orig[i + 1]);
+      let next = orig;
+      if (moved) {
+        next = new Float64Array(orig.length + (dense ? dense.length * 2 : 0));
+        let o = 0, di = 0;
+        for (let i = 0; i < orig.length; i += 2) {
+          const d = this.osShift.get(orig[i] + ',' + orig[i + 1]);
+          next[o++] = orig[i] + (d ? d[0] : 0); next[o++] = orig[i + 1] + (d ? d[1] : 0);
+          while (dense && di < dense.length && dense[di][0] === i >> 1) { next[o++] = dense[di][1]; next[o++] = dense[di][2]; di++; }
+        }
+      }
+      if (!sameNodes(next, way.nodes)) {
+        way.nodes0 = moved ? orig : null;
+        way.nodes = next;
+        changed.add(t);
+      }
+    }
+    if (changed.size || widened) this.version++;
+    if (changed.size && project && this.origin) {
+      for (const t of changed) this._project(t);
+      this._reindex();
+      this._projectFeaturesIn(s, w, n, e);
+    }
+    return changed.size > 0;
+  }
+
+  /** Project again the feature cells overlapping this box (their road nodes may have moved) and bump featVersion. */
+  _projectFeaturesIn(s, w, n, e) {
+    for (const c of this.featureCells.values()) {
+      if (!c.nodes || c.klat == null) { if (c.nodes) this._projectFeatures(c); continue; }
+      if (c.klat * FEAT_DEG > n || (c.klat + 1) * FEAT_DEG < s || c.klon * FEAT_DEG > e || (c.klon + 1) * FEAT_DEG < w) continue;
+      this._projectFeatures(c);
+    }
+    this.featVersion++;
+  }
+
+  _evictOs() {
+    while (this.osCells.size > OS_CACHE) {
+      let oldest = null;
+      for (const c of this.osCells.values()) if (!c.loading && (oldest === null || c.at < oldest.at)) oldest = c;
+      if (oldest === null) return;
+      this.osCells.delete(oldest.key);
+      if (oldest.surf && oldest.surf.polys) this.surfVersion++;
+    }
+  }
+
+  get osLoaded() { return [...this.osCells.values()].filter(c => c.links).length; }
+
   // ---- features ---------------------------------------------------------------------------------
 
   /** The feature cells within FEAT_PREFETCH_M of the point, loaded or loading. */
@@ -232,7 +460,11 @@ export class MapData {
   }
 
   _projectFeatures(c) {
-    for (const n of c.nodes) { const [x, y] = this.toLocal(n.lat, n.lon); n.x = x; n.y = y; }
+    for (const n of c.nodes) {
+      const d = this.osShift && this.osShift.get(n.lat + ',' + n.lon);   // its road node moved onto OS's line (_osApply)
+      const [x, y] = d ? this.toLocal(n.lat + d[0], n.lon + d[1]) : this.toLocal(n.lat, n.lon);
+      n.x = x; n.y = y;
+    }
   }
 
   _evictFeatures() {
@@ -373,3 +605,10 @@ export class MapData {
 }
 
 export const keyOf = (t) => `${t.cell}/${t.file}`;
+
+function sameNodes(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}

@@ -67,7 +67,7 @@ npm test --silent
 (cd android && ./gradlew --quiet testDebugUnitTest assembleRelease)
 
 apk_src=android/app/build/outputs/apk/release/app-release.apk
-apk="android/app/build/outputs/apk/release/oceanfront-view-$tag.apk"
+apk="android/app/build/outputs/apk/release/oceanscape-$tag.apk"
 cp "$apk_src" "$apk"
 apksigner=$(ls -d "${ANDROID_HOME:-$HOME/Library/Android/sdk}"/build-tools/*/apksigner 2>/dev/null | sort | tail -1 || true)
 if [ -n "$apksigner" ]; then
@@ -81,16 +81,16 @@ else
   echo "release: note: no apksigner in the Android SDK's build-tools, so the signing key wasn't checked"
 fi
 
-git commit --quiet -m "Oceanfront View $tag" -- "$gradle_file"
-git tag -a "$tag" -m "Oceanfront View $tag"
+git commit --quiet -m "Oceanscape $tag" -- "$gradle_file"
+git tag -a "$tag" -m "Oceanscape $tag"
 trap - ERR
 echo "release: committed and tagged $tag; the APK is $apk ($(du -h "$apk" | cut -f1 | tr -d ' '))"
 
 if [ "$publish" = 1 ]; then
   git push origin HEAD "refs/tags/$tag"
-  gh release create "$tag" "$apk" --title "Oceanfront View $tag" --generate-notes
+  gh release create "$tag" "$apk" --title "Oceanscape $tag" --generate-notes
 else
   echo "release: to publish it:"
   echo "  git push origin HEAD refs/tags/$tag"
-  echo "  gh release create $tag $apk --title \"Oceanfront View $tag\" --generate-notes"
+  echo "  gh release create $tag $apk --title \"Oceanscape $tag\" --generate-notes"
 fi

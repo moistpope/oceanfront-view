@@ -254,6 +254,10 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bord
 .section h3 code { font-size: 12px; color: var(--muted); font-weight: 500; }
 .section h3 small { font-size: 13px; color: var(--muted); font-weight: 500; }
 p.desc { margin: 0 0 10px; font-size: 13px; color: var(--muted); line-height: 1.4; }
+p.desc b { color: var(--text); font-weight: 600; }
+.section details > summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; color: var(--muted); }
+.section details[open] > summary { margin-bottom: 8px; }
+.section details > .section { margin: 0 0 14px; }
 .badge { font-size: 10px; font-weight: 700; letter-spacing: .6px; padding: 3px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); text-transform: uppercase; }
 .badge.gray { background: var(--line); color: var(--muted); }
 .banner { padding: 10px 12px; border-radius: 12px; font-size: 13px; margin-bottom: 14px; background: var(--accent-soft); color: var(--text); }
@@ -661,3 +665,28 @@ html.rhd.wide .econ { left: 0; }
   html.rhd .econ { left: 4px; }
   html.rhd .replaybar { left: var(--edge); right: calc(var(--edge) + 66px); }
 }
+/* the next turn floating over the road (infotainment.js _turnFloat; html.tf-on: the ground style isn't Flat) instead of the card at the top */
+.turnfloat { display: none; }
+html.tf-on .navcard { display: none; }
+html.tf-on .turnfloat:not(.hidden) {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; position: absolute; left: 0; top: 0; z-index: 4;
+  pointer-events: none; color: var(--text); text-align: center; will-change: transform;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.14); filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.12));
+}
+html.tf-on[data-theme="dark"] .turnfloat { text-shadow: 0 1px 12px rgba(0, 0, 0, 0.6); filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5)); }
+.tf-icon { width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; }
+.tf-icon svg { width: 60px; height: 60px; }
+.tf-icon img { width: 60px; height: 60px; object-fit: contain; }
+.tf-bar { width: 96px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 25%, transparent); overflow: hidden; }
+.tf-bar i { display: block; height: 100%; width: 0; background: var(--text); transition: width .3s linear; }
+.tf-what { font-size: 26px; font-weight: 600; letter-spacing: -.3px; white-space: nowrap; }
+.tf-dist { font-size: 15px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: -4px; }
+html.tf-on:not([data-theme="dark"]) .tf-icon img { filter: invert(0.85); }   /* the nav app's white arrow, on a light road */
+
+/* the floating turn read-out beside our layouts: it is placed in infotainment.js (_turnFloat) on the passenger's side of
+   the car (html.rhd mirrors it), above the music bar along the bottom (--bottom-h); in the wide strip it is smaller */
+html.wide .tf-icon { width: 40px; height: 40px; }
+html.wide .tf-icon svg, html.wide .tf-icon img { width: 36px; height: 36px; }
+html.wide .tf-bar { width: 72px; }
+html.wide .tf-what { font-size: 16px; }
+html.wide .tf-dist { font-size: 12px; margin-top: -2px; }

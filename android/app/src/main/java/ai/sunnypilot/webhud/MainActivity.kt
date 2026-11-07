@@ -147,7 +147,7 @@ class MainActivity : Activity(), Link.Listener, Infotainment.Listener, CanBridge
         @JavascriptInterface
         fun canDiag(): String {
             val links = link.root.run(
-                "for i in can1 can2; do ip -details -statistics link show \$i 2>&1; echo; done; " +
+                "for i in can0 can1 can2; do ip -details -statistics link show \$i 2>&1; echo; done; " +
                     "for f in /sys/module/mcp251x/parameters/*; do echo \"\$(basename \$f) = \$(cat \$f 2>/dev/null)\"; done; " +
                     "echo; ps -A 2>/dev/null | grep -i -E 'can|pulse' | grep -v grep",
                 waitMs = 4000, timeoutMs = 3000) ?: "(no root shell: the interfaces can't be read)"

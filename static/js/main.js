@@ -1,4 +1,4 @@
-// Oceanfront View entry point: renders the car view from the car's own buses (IBUS1/IBUS2, through the Android
+// Oceanscape entry point: renders the car view from the car's own buses (IBUS1/IBUS2, through the Android
 // app), joins the comma's stream when it is there, and wires the controls.
 import { $, $$, el, api, fmtTime, iconSvg, setClass, setText, store, save } from './util.js';
 import { CarScene } from './scene.js';
@@ -13,8 +13,10 @@ import { CarCommands } from './cancmd.js';
 import { Settings } from './settings.js';
 import { VehicleState } from './vehicle.js';
 import { RoadCam } from './roadcam.js';
+import { Region } from './region.js';
+import { setCountry, currentCountry } from './regional.js';
 
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
 const AUTO_VIEW_HOLD_MS = 10000;   // a parking maneuver starting this soon after the user picked a view keeps it
 const TAP_PX = 8, TAP_MS = 300;    // a tap moves less and is shorter than this; two within TAP_MS are a double tap
 const DOCK_IDLE_MS = 10000;        // the controls close after this long left alone
@@ -27,7 +29,7 @@ const DEFAULTS = {
   showTracks: true, showRadar: false, radarAllTracks: false, showLowConf: false, showObjectStats: false, objectMode: 'world',
   laneHeadingSign: 1, laneCurvatureSign: 1, objectHeadingSign: 1, laneConfThreshold: LANE_CONF_THRESHOLD,
   showFps: true, renderScale: 'auto', showMusic: true, showNav: true, demoInfotainment: false, demoCarState: false, carDemo: false,
-  calibration: true, mapPrefetchKm: 25, positionSource: 'car', roadcam: 'mirror', groundStyle: 'perforated',
+  calibration: true, mapPrefetchKm: 25, mapSource: 'auto', osKey: '', osCap: 5000, positionSource: 'car', roadcam: 'mirror', groundStyle: 'perforated',
   layout: 'auto', drum: false, driverSide: 'auto',
 };
 
@@ -47,6 +49,8 @@ function loadSettings() {
   }
   // v4: the plain ground style is called Flat
   if ((s.version || 1) < 4 && s.groundStyle === 'standard') s.groundStyle = 'flat';
+  // v5: map data follows the country (region.js)
+  if ((s.version || 1) < 5 && s.mapSource === 'osm') s.mapSource = 'auto';
   return { ...DEFAULTS, ...s, version: SETTINGS_VERSION };
 }
 
@@ -54,6 +58,9 @@ class App {
   constructor() {
     this.settings = loadSettings();
     save('settings', this.settings);
+    // the country the car is in: the settings' Auto choices follow it (regional.js, postOs)
+    this.region = new Region((c) => this.onCountry(c));
+    setCountry(this.region.country);
     this.state = null;             // the state the view draws (the source's below)
     this.ws = null;
     this.connected = false;        // the comma's WebSocket is open
@@ -156,10 +163,27 @@ class App {
     if (key === 'demoCarState') this.carState.apply();
     if (key === 'calibration') this.worker.postMessage({ type: 'calibration', on: value });
     if (key === 'mapPrefetchKm') this.worker.postMessage({ type: 'mapPrefetch', km: Number(value) });
+    if (key === 'mapSource' || key === 'osKey' || key === 'osCap') this.postOs(this.worker);
     if (key === 'positionSource') this.applyPositionSource();
     if (key === 'layout' || key === 'drum') this.updateLayout();
     if (!this.car.apa) this.scene.update(this.state, this.settings);
     if (this.ui.isOpen && this.ui.tab === 'display') this.ui.show('display', true);
+  }
+
+  /** The map data source (settings.js Map data): Ordnance Survey's road widths and surfaces on top of OSM, with the
+   *  user's key; on Auto, in the UK (Great Britain's data: Northern Ireland's cells just come back empty). */
+  postOs(w) {
+    const s = this.settings, c = currentCountry();
+    const on = !!s.osKey && (s.mapSource === 'os' || (s.mapSource === 'auto' && !!c && c.gb));
+    if (w) w.postMessage({ type: 'osRoads', on, key: s.osKey || '', cap: Number(s.osCap) || 5000 });
+  }
+
+  /** The car has crossed into another country (or its first is known): the Auto settings follow. */
+  onCountry(c) {
+    setCountry(c);
+    this.postOs(this.worker);
+    if (this.state && !this.car?.apa) this.scene.update(this.state, this.settings);
+    if (this.ui?.isOpen && this.ui.tab === 'display') this.ui.show('display', true);
   }
 
   applyTheme() {
@@ -246,6 +270,7 @@ class App {
     };
     w.postMessage({ type: 'calibration', on: this.settings.calibration !== false });
     w.postMessage({ type: 'mapPrefetch', km: Number(this.settings.mapPrefetchKm ?? 25) });
+    this.postOs(w);
     w.postMessage({ type: 'position', source: this.settings.positionSource });
     const text = (path, required) => fetch(path, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(`${path}: ${r.status}`); return r.text(); })
       .catch(e => { if (required) throw e; return null; });
@@ -412,6 +437,7 @@ class App {
 
   draw(state) {
     this.state = state;
+    if (state && state.pose) this.region.update(state.pose.lat, state.pose.lon, performance.now() / 1000);
     this.lastStateAt = performance.now();
     if (!this.car.apa) this.scene.update(state, this.settings);
     this.updateRadarChip();

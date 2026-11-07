@@ -1,4 +1,4 @@
-// The next turn on the road: once it's near, an arrow lies on the ego lane at the turn, bending the way
+// The next turn on the road (violet, as the route is: routeview.js): once it's near, an arrow lies on the ego lane at the turn, bending the way
 // the turn goes (a ring at the destination). The nav app gives the distance rounded (0.3 mi is anywhere
 // from 0.25 to 0.35), so the turn is pinned to the road (road.js odo) when it's first given and carried
 // along with the car from there; each later distance only nudges it back inside what that distance
@@ -17,7 +17,7 @@ export class NavArrow {
     this.road = road;   // road.js RoadModel
     this.group = new THREE.Group();
     this.group.name = 'navarrow';
-    this.material = new THREE.MeshBasicMaterial({ color: 0x3e6ae1, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
+    this.material = new THREE.MeshBasicMaterial({ color: 0x7446f0, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
     this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
     this.mesh.renderOrder = 2;
@@ -62,11 +62,13 @@ export class NavArrow {
     this.mesh.geometry = geo;
   }
 
-  // place it on the road as it is now; road.place(s, d): s m ahead, d m left of the ego lane's center
-  update(toScene, clock) {
+  // place it on the road as it is now; road.place(s, d): s m ahead, d m left of the ego lane's center. routeShown:
+  // the route is drawn on the map's roads (routeview.js), which shows the turn already: the arrow would be a second
+  // violet path beside it, so it's left out
+  update(toScene, clock, routeShown = false) {
     const t = this.turn, road = this.road;
     const ahead = t ? t.at - road.odo : Infinity;
-    const show = ahead < SHOW_M && ahead > -PAST_M;
+    const show = !routeShown && ahead < SHOW_M && ahead > -PAST_M;
     this.group.visible = show;
     if (!show) return;
     const p = road.place(Math.max(0, ahead), 0);

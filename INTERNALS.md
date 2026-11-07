@@ -1,4 +1,4 @@
-# Oceanfront View internals
+# Oceanscape internals
 
 How the HUD decodes, fuses and draws what it shows: the detail behind the [README](README.md).
 
@@ -301,7 +301,9 @@ ways into the pose's frame and indexes their segments on a grid. The matcher sco
 by distance and heading (one-way respected), stays on the current way until an unconnected one has won for
 a while or the current one has ended, and follows the most likely continuation (same ref or name, then the
 smallest turn) ~500 m ahead into a *horizon*: the centerline polyline in the pose frame with the roads
-branching off it (offset along, angle, class, name). The match is which road and roughly where along it,
+branching off it (offset along, angle, class, name). Turning at the first junction ahead (the indicator, else
+the yaw rate) takes the horizon onto that branch and holds it for 2 s, unless the car yaws the other way: a jog
+in the road (Whitehall round the island by Great Scotland Yard) yaws the car one way, then back. The match is which road and roughly where along it,
 never which lane. On the recorded drives it agreed with mapd's road name 90-100% of the time
 (`tools/map_eval.mjs`).
 
@@ -315,7 +317,8 @@ with the carriageway as wide as the lane count says, and the lane lines are the 
 (edges, a two-way road's centerline, lane boundaries) as parallel offsets of it, opened at the junctions
 along it. What the cameras add is *which lane* the car is drawn in: the map has no lanes and the GPS and
 the OSM centerline are both meter-level, so the car is placed in a lane of the map's road (counted from the
-right) and the whole map slides sideways -- with a 1.5 s time constant, never faster than 0.4 m/s -- so
+right) and the whole map slides sideways -- with a 1.5 s time constant, never faster than 0.4 m/s but for
+3 s after the match moves to another way, whose lanes needn't line up with the last one's -- so
 that lane's center passes where the cameras see the ego lane's center at the car (lanes 3.6 m wide, the
 map's, since the network's lines are drawn with that). A lane change moves the lane index, not the map. Without lanes
 seen the car keeps the lane it had (or starts in the right lane); only a GPS that insists for five seconds
@@ -355,6 +358,46 @@ mini-roundabout its ring. Speed limits are left to the camera's read of the real
 stale, and two signs for one limit confuse). So the car is placed on the map, and
 the roads around it and what stands along them are there whether or not the matcher has an opinion about
 them.
+
+The nav app's route is drawn on the map's roads in violet (`navroute.js`, `routeview.js`), apart from openpilot's
+blue path and the comma's green planner. Google Maps gives other apps only its next step (the turn-by-turn
+notification, `infotainment.js parseNav`), so the route is worked out from that on the roads layer: the road ahead
+is followed to the junction about the step's distance on where a road of the step's name (or, without one, a road the
+way it turns) leaves, round a roundabout to the nth exit; past the turn, the new road is drawn bright until the first
+junction the route could leave at (driveways and car parks don't count), then faint for 250 m, until the next step.
+The ribbon runs in a lane: the car's, the turn's as it nears (OSM's turn:lanes when there are some), then the kerb
+side lane. The next-turn arrow (`navarrow.js`) is the same violet.
+
+The country the car is in is looked up from its position (`region.js`, in `borders_data.js`: Natural Earth's 1:50m
+borders through world-atlas, built by `tools/make_borders.py`), remembered across starts, and switched only after
+30 s in a new one so a fix near a border doesn't flip the units. The settings' Auto follows it (`regional.js`): the
+traffic side, the units of the camera's speed-limit readings (mph in the UK, where the ADAS reports 30 mph signs as
+km/h), the sign drawn (US or round) and the map data (Ordnance Survey in the UK when there's a key); before it's
+known, the car's own signals. Each can still be overridden (*Display → Country → Override*).
+
+In Great Britain the road widths can come from Ordnance Survey (*Display → Map data*, Auto or "OSM + Ordnance Survey",
+with the user's OS Data Hub key): OSM there rarely tags `width`, while OS's Road Link (OS NGD API – Features,
+`trn-ntwk-roadlink-5`, premium data within the account's free monthly allowance) measures every carriageway
+kerb to kerb. The APK fetches a 0.05 deg cell's road links once (`GET /map/os/<klat>/<klon>`, headers `X-OS-Key`
+and `X-OS-Cap`, `OsRoads.kt`, kept under `<files>/os/roads/`, the month's requests counted and capped,
+`GET /map/os/status`), and the worker gives an OSM way the median width of the OS links it runs along: sampled
+every 10 m away from its ends, a sample matching the nearest link within 8 m and 25 deg, the way taking a width
+only when 60% of the samples inside loaded cells match (`world/osroads.js`, `MapData._osApply`, `way.osWidth`).
+`laneLayout` uses it where OSM gives no width (lanes down to 2.0 m, since OS's is the real kerb-to-kerb width),
+and a two-way road OSM gives no lane count for that is under 4.2 m wide is drawn as single track. Lane counts,
+arrows and limits stay OSM's. The same setting brings OS's surveyed road surfaces (Road Track Or Path,
+`trn-fts-roadtrackorpath-3`, `GET /map/ossurf/<klat>/<klon>`, kept as `surf_<klat>_<klon>.json`): the ground-level
+outline of every carriageway, pavement and central reservation. The worker hands those within the roads layer's
+radius to the network (`layer.surfaces`), whose meshes (roadnetgeom.js, triangulated with earcut) add the carriageway
+to the strips, so junction mouths and widenings are filled as they really are, and lay pavements and reservations
+over the strips and their lines, so the road shows only where it is. Since the two maps were surveyed apart (by up
+to ~8 m), a way that takes an OS width is also moved onto OS's centreline (`osroads.js` `snapNodes`, `denseOnto`):
+each node onto the parallel link next to it, a shared node by the mean of its ways' moves so junctions stay joined,
+and points every 15 m put between far-apart nodes so a long OSM straight follows OS's bend (`way.nodes0` keeps OSM's
+nodes; point features on moved nodes move with them). A one-way way (half a dual carriageway) only matches one-way
+links, so the halves don't both land on a two-way link's middle. Only the ways reaching into a newly arrived cell are
+redone. Surface rings are stored as integer millionths of a degree from the cell's corner (`origin`). Only the APK
+serves `/map/os/` and `/map/ossurf/`.
 
 Nothing of the map is ever dropped from disk, and it is fetched ahead: as the car moves, the worker asks its
 server to download everything within *Display → Map download* (default 25 km; `POST /map/prefetch {lat, lon,

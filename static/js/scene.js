@@ -20,6 +20,7 @@ import { NavArrow } from './navarrow.js';
 import { mapReference, mapRoadFrame, mapAlignMatrix, freshPlacement, lineAlong, junctions, cutByStations } from './mapsurface.js';
 import { RoadNetwork } from './roadnet.js';
 import { MapFeatures } from './mapfeatures.js';
+import { RouteView } from './routeview.js';
 import { STEER_RATIO } from './vehicle.js';
 
 const EGO_LEN = 4.775;
@@ -344,6 +345,7 @@ export class CarScene {
     this.world.add(this.mapGroup);
     this.roadnet = new RoadNetwork(this.mapGroup);
     this.mapFeatures = new MapFeatures(this.mapGroup);
+    this.route = new RouteView(this.mapGroup);   // the nav app's route on the roads (navroute.js), set by setNav
     this.roadSrc = { mode: 'camera', pending: 0, lost: 0, fade: 0 };   // whose road is drawn: the map's or the cameras' (_road)
     this.place = freshPlacement();   // where the car is drawn across the map's road (mapsurface.js)
     this.lastMap = null;             // the last usable map match (kept through a short coast)
@@ -409,6 +411,7 @@ export class CarScene {
     this.road = new RoadModel();
     this.navArrow = new NavArrow(this.road);   // the next turn, on the road (infotainment.js sets it)
     this.scene.add(this.navArrow.group);
+    fadeAtDrum(this.navArrow.material);   // on the road, so it fades toward the drum horizon with it
     this.roadOut = null;   // this frame's road (RoadModel.update)
     this.ribbons.zebra = new Ribbon(this.mats.marking, 256);
     this.scene.add(this.ribbons.zebra.mesh);
@@ -464,6 +467,9 @@ export class CarScene {
     window.addEventListener('resize', () => this.resize());
   }
 
+  /** The nav app's next step (infotainment.js parseNav), or null: the route on the map follows it (routeview.js). */
+  setNav(parsed) { this.route.setNav(parsed, this.road.odo); }
+
   setTheme(dark) {
     this.theme = dark ? THEMES.dark : THEMES.light;
     const t = this.theme;
@@ -488,6 +494,7 @@ export class CarScene {
     this.mats.lineSoft.color.set(t.line);
     this.mats.branch.color.set(t.ground).lerp(new THREE.Color(t.road), dark ? 0.35 : 0.07);   // the lanes' tint (ground.js), so arms match our road
     this.roadnet.setTheme(t, dark);
+    this.route.setTheme(dark);
     this.mapFeatures.setTheme(t, dark);
     this.mats.branchEdge.color.set(t.edge);
     this.mats.branchCenter.color.set(t.yellow);
@@ -1459,6 +1466,7 @@ export class CarScene {
       this.mapGroup.matrix.identity(); this.mapGroup.matrixWorldNeedsUpdate = true;
       this.roadnet.clear();
       this.mapFeatures.clear();
+      this.route.clear();
     }
     src.fade = Math.max(0, Math.min(1, src.fade + (src.mode === 'map' ? dt : -dt) / MAP_FADE_S));
     const zr = this.ego.userData.rearAxleZ ?? REAR_AXLE_Z;
@@ -1473,6 +1481,8 @@ export class CarScene {
     // the US's double yellow center line where its speed signs would be, else (the UK, Europe) a white one
     const f0 = this.state?.fisker, unit0 = s.units === 'mph' || s.units === 'kmh' ? s.units : f0?.vehicle?.displayUnit;
     this.roadnet.update(map, showMap, leftTraffic(s, f0), signStyle(s, unit0, f0) === 'us');
+    this.route.update({ map: map && map.roads ? map : this.lastMap, pose: this.pose, ref: this.mapRef, odo: this.road.odo, leftTraffic: leftTraffic(s, f0),
+      show: showMap && s.showNav !== false, clock: this.clock, dt });
     const f = this.state && this.state.fisker;
     this.ourSignal = this.mapFeatures.update(map, showMap && s.showSigns !== false, f ? f.tlr : null, this.pose, this.clock);
   }
@@ -1508,7 +1518,7 @@ export class CarScene {
     this.cutaway.update(dt, this.clock);
     this._driveModel();
     this.groundStyle.update();   // after the objects and the car have moved
-    this.navArrow.update(toScene, this.clock);
+    this.navArrow.update(toScene, this.clock, this.route.mesh.visible);
     // the drum eases in and out, and flattens while the car controls frame the car
     const k = this.drumOn && !this.studio && !this.cutaway.awake ? 1 / DRUM_R : 0;
     this.drumK += (k - this.drumK) * (1 - Math.exp(-dt * 3));

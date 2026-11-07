@@ -87,6 +87,21 @@ describe('MapMatcher', () => {
     assert.ok(m.horizon[m.horizon.length - 1][1] < -200, 'Mill Road, south-east');
   });
 
+  test('a turn held by the yaw is let go when the car yaws the other way', () => {
+    const md = network();
+    const mm = new MapMatcher(md);
+    // yawing left 20 m before the crossing: north up Cross Street
+    let m = mm.update([-20, 0, 0.1], 10, 0, { w: 0.4, turn: 0 });
+    assert.ok(m.horizon[m.horizon.length - 1][1] > 300, 'north up Cross Street');
+    // the yaw eases: the choice is held
+    m = mm.update([-15, 0.3, 0.1], 10, 0.5, { w: 0.05, turn: 0 });
+    assert.ok(m.horizon[m.horizon.length - 1][1] > 300, 'still held');
+    // it reverses (the left was a jog in the road, not a turn): straight on along Main again
+    m = mm.update([-10, 0.5, 0.05], 10, 1.0, { w: -0.3, turn: 0 });
+    const last = m.horizon[m.horizon.length - 1];
+    assert.ok(last[0] > 300 && Math.abs(last[1]) < 0.5, `straight on: ${last}`);
+  });
+
   test('the road behind the car is the path it drove: after a turn it runs back round the corner', () => {
     const md = network();
     const mm = new MapMatcher(md);

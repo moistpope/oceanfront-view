@@ -6,6 +6,7 @@ import { OCEAN_PAINTS, OCEAN_WHEELS, oceanPaint } from './models.js';
 import { RX_IDS } from './ibus_tables.js';
 import { CommaPanel } from './comma.js';
 import { GROUND_STYLES } from './groundstyle/index.js';
+import { currentCountry } from './regional.js';
 
 // tab -> what it needs the comma for
 const OFFLINE_TABS = new Map([
@@ -240,6 +241,25 @@ export class Settings {
       body.append(el('div.section', el('h3', 'Fisker ACC'),
         el('p.desc', 'The ACC defaults require an updated comma WebHUD server.')));
     }
+    if (p.FiskerOverrideTorque != null && Number.isFinite(Number(p.FiskerOverrideTorque))) {
+      // how hard the driver must turn the wheel (held 100 ms) for openpilot to let go of the steering; live while driving.
+      // 1.5..6.4 in tenths, then 6.5: openpilot no longer yields on torque and the EPS's own takeover (~6.5 Nm) is what lets go
+      const CAR = 6.5;
+      const tq = Math.min(CAR, Math.max(1.5, Math.round(Number(p.FiskerOverrideTorque) * 10) / 10));
+      const text = (v) => v >= CAR ? `${CAR.toFixed(1)} Nm · the car's own` : `${v.toFixed(1)} Nm`;
+      const value = el('b', text(tq));
+      const fill = (v) => slider.style.setProperty('--p', `${(v - 1.5) / (CAR - 1.5) * 100}%`);
+      const slider = el('input', { type: 'range', min: 1.5, max: CAR, step: 0.1, value: tq,
+        oninput: (e) => { const v = Number(e.target.value); value.textContent = text(v); fill(v); },
+        onchange: (e) => put({ FiskerOverrideTorque: Math.round(Number(e.target.value) * 10) / 10 }) });
+      fill(tq);
+      body.append(el('div.section',
+        el('h3', 'Steering takeover'),
+        el('p.desc', 'How hard you turn the wheel, held for a tenth of a second, before openpilot lets go of the steering. Lower makes the ' +
+          'wheel easier to take. Applies straight away, while driving too. 6.5 Nm is the car\'s own override torque: at the top step ' +
+          'openpilot doesn\'t let go on torque at all, and the steering system\'s own takeover releases the wheel.'),
+        el('div.rows', el('div.row', el('div.lbl', el('b', 'Takeover torque'), el('small', 'Default 3.0 Nm.')), value)), slider));
+    }
     if ('FiskerSpeedLimitUnit' in p) {
       // what the comma tells the ADAS in the head unit's map metadata (ICC_0x362): the ADAS reads the unit of the
       // speed-limit signs from it, and UK head units send it blank (km/h), so 30 mph signs set ACC to 30 km/h
@@ -248,20 +268,29 @@ export class Settings {
         [756, 'Switzerland'], [208, 'Denmark'], [578, 'Norway'], [752, 'Sweden']];
       const country = Number(p.FiskerCountryCode) || 0;
       if (!countries.some(([c]) => c === country)) countries.push([country, `Code ${country}`]);
+      const manual = [
+        el('div.row', el('div.lbl', el('b', 'Sign units'), el('small', 'Follow dash uses the cluster\'s mph / km/h setting.')),
+          this.app.segmented([['0', 'Follow dash'], ['1', 'mph'], ['2', 'km/h'], ['3', 'Head unit']], String(p.FiskerSpeedLimitUnit ?? 0),
+            v => put({ FiskerSpeedLimitUnit: Number(v) }))),
+        el('div.row', el('div.lbl', el('b', 'Traffic side'), el('small', 'The side of the road the car drives on.')),
+          this.app.segmented([['0', 'Head unit'], ['1', 'Left'], ['2', 'Right']], String(p.FiskerTrafficSide ?? 0),
+            v => put({ FiskerTrafficSide: Number(v) }))),
+        el('div.row', el('div.lbl', el('b', 'Country'), el('small', 'The country the ADAS reads signs for.')),
+          el('select', { onchange: (e) => put({ FiskerCountryCode: Number(e.target.value) }) },
+            countries.map(([c, n]) => el('option', { value: c, selected: c === country }, n)))),
+      ];
+      // a comma that works these out from its GPS (FiskerAdasAuto): the manual ones are only the fallback
+      const hasAuto = typeof p.FiskerAdasAuto === 'boolean', auto = hasAuto && p.FiskerAdasAuto;
+      const autoRow = hasAuto && el('div.row', el('div.lbl', el('b', 'Auto from GPS'),
+        el('small', auto ? (p.FiskerAdasAutoCountry ? `Set for ${p.FiskerAdasAutoCountry} at the last car start.` : 'Waiting for the comma\'s first GPS fix.')
+          : 'Units, side and country follow the country the car is in.')),
+        this.app.switch(auto, v => put({ FiskerAdasAuto: v })));
       body.append(el('div.section',
         el('h3', 'Speed-limit signs (ADAS)'),
         el('p.desc', 'What the comma tells the ADAS about where the car is, for the signs its camera reads and auto speed. ' +
-          'Applied at the next car start. In the UK: Follow dash (or mph), Left, United Kingdom.'),
-        el('div.rows',
-          el('div.row', el('div.lbl', el('b', 'Sign units'), el('small', 'Follow dash uses the cluster\'s mph / km/h setting.')),
-            this.app.segmented([['0', 'Follow dash'], ['1', 'mph'], ['2', 'km/h'], ['3', 'Head unit']], String(p.FiskerSpeedLimitUnit ?? 0),
-              v => put({ FiskerSpeedLimitUnit: Number(v) }))),
-          el('div.row', el('div.lbl', el('b', 'Traffic side'), el('small', 'The side of the road the car drives on.')),
-            this.app.segmented([['0', 'Head unit'], ['1', 'Left'], ['2', 'Right']], String(p.FiskerTrafficSide ?? 0),
-              v => put({ FiskerTrafficSide: Number(v) }))),
-          el('div.row', el('div.lbl', el('b', 'Country'), el('small', 'The country the ADAS reads signs for.')),
-            el('select', { onchange: (e) => put({ FiskerCountryCode: Number(e.target.value) }) },
-              countries.map(([c, n]) => el('option', { value: c, selected: c === country }, n)))))));
+          'Applied at the next car start.' + (hasAuto ? '' : ' In the UK: Follow dash (or mph), Left, United Kingdom.')),
+        el('div.rows', autoRow, ...(auto ? [] : manual)),
+        auto ? el('details', el('summary', 'Used before the first GPS fix'), el('div.rows', ...manual)) : null));
     }
     body.append(el('div.section', el('div.rows',
       el('div.row', el('div.lbl', el('b', 'Experimental mode'), el('small', 'End-to-end longitudinal from the driving model.')),
@@ -284,7 +313,7 @@ export class Settings {
   // split into sections picked from a bar at the top, so no page is one long list
   renderDisplay() {
     const sec = this.displaySection;
-    this.laneConfNow = this.positionNow = null;   // only the Road section shows them
+    this.laneConfNow = this.positionNow = this.osStatus = null;   // only the Road section shows them
     this.body.append(el('div.subnav', this.app.segmented([['general', 'General'], ['road', 'Road'], ['objects', 'Objects'], ['debug', 'Debug']], sec,
       v => { this.displaySection = v; this.show('display'); })));
     ({ general: () => this.displayGeneral(), road: () => this.displayRoad(), objects: () => this.displayObjects(), debug: () => this.displayDebug() })[sec]();
@@ -319,18 +348,31 @@ export class Settings {
       this.app.segmented(GROUND_STYLES.map(g => [g.id, g.label]), s.groundStyle || 'perforated', v => set('groundStyle', v))));
     body.append(el('div.section', el('h3', 'Speed units'),
       this.app.segmented([['auto', 'Follow cluster'], ['mph', 'mph'], ['kmh', 'km/h']], s.units, v => set('units', v))));
-    body.append(el('div.section', el('h3', 'Traffic side'),
-      el('p.desc', 'Which side of a two-way road to drive on. For the UK, choose Left.'),
-      this.app.segmented([['auto', 'Follow car'], ['left', 'Left (UK)'], ['right', 'Right']], s.trafficSide || 'auto', v => set('trafficSide', v))));
+    // the country the car is in sets the side of the road, the sign units and the sign (region.js); each can be
+    // overridden under Override
+    const c = currentCountry();
+    const auto = c ? `Auto (${c.name})` : 'Auto';
+    const what = c ? `${c.name}: drives on the ${c.left ? 'left' : 'right'}, speed limits in ${c.mph ? 'mph' : 'km/h'}, ` +
+      `${c.usSign ? 'US' : 'round'} speed-limit signs${c.gb ? ', Ordnance Survey map data with a key' : ''}.`
+      : 'Not known yet: it is worked out from the car\'s position once there is a GPS fix (until then the car\'s own settings are used).';
+    const overridden = ['trafficSide', 'cameraSignUnits', 'signStyle'].some(k => s[k] && s[k] !== 'auto');
+    body.append(el('div.section', el('h3', 'Country'),
+      el('p.desc', 'Which side of the road, the units of the speed-limit signs the camera reads and the sign drawn all follow ' +
+        'the country the car is in, found from its GPS position (and remembered for the next start).'),
+      el('p.desc', el('b', what)),
+      el('details', overridden ? { open: true } : {},
+        el('summary', overridden ? 'Override (in use)' : 'Override'),
+        el('div.section', el('h3', 'Traffic side'),
+          this.app.segmented([['auto', auto], ['left', 'Left'], ['right', 'Right']], s.trafficSide || 'auto', v => set('trafficSide', v))),
+        el('div.section', el('h3', 'Camera speed-sign units'),
+          el('p.desc', 'Units of the number read from signs, before display conversion.'),
+          this.app.segmented([['auto', auto], ['mph', 'mph'], ['kmh', 'km/h']], s.cameraSignUnits || 'auto', v => set('cameraSignUnits', v))),
+        el('div.section', el('h3', 'Speed-sign style'),
+          el('p.desc', 'The speed limit sign drawn on the HUD and by the road.'),
+          this.app.segmented([['auto', auto], ['round', 'Round (UK/EU)'], ['us', 'US']], s.signStyle || 'auto', v => set('signStyle', v))))));
     body.append(el('div.section', el('h3', 'Driver\'s side'),
       el('p.desc', 'The status card and the controls (the menu, what\'s playing, the replay) go on the driver\'s side, the energy card and the chips on the other. Follow traffic puts the driver on the right where traffic keeps left.'),
       this.app.segmented([['auto', 'Follow traffic'], ['left', 'Left'], ['right', 'Right']], s.driverSide || 'auto', v => set('driverSide', v))));
-    body.append(el('div.section', el('h3', 'Camera speed-sign units'),
-      el('p.desc', 'Units of the number read from signs, before display conversion. Choose mph for UK signs if Follow car converts them incorrectly.'),
-      this.app.segmented([['auto', 'Follow car'], ['mph', 'mph'], ['kmh', 'km/h']], s.cameraSignUnits || 'auto', v => set('cameraSignUnits', v))));
-    body.append(el('div.section', el('h3', 'Speed-sign style'),
-      el('p.desc', 'The speed limit sign drawn on the HUD and by the road. Follow units uses the US sign for mph, except with left-hand (UK) traffic.'),
-      this.app.segmented([['auto', 'Follow units'], ['round', 'Round (UK/EU)'], ['us', 'US']], s.signStyle || 'auto', v => set('signStyle', v))));
     const paint = oceanPaint(s.egoPaint);
     body.append(el('div.section', el('h3', 'Paint', el('small', `${paint.name} · ${paint.finish.toLowerCase()}`)),
       el('div.swatches', OCEAN_PAINTS.map(p => el('button.swatch' + (p === paint ? '.on' : ''),
@@ -343,7 +385,8 @@ export class Settings {
       ['showTracks', 'Power trails', 'Glowing particle trails behind the rear tires, colored by how hard the motors pull (blue light, through the spectrum to red at full power); longer the faster you go.'],
       ['autoView', 'Auto view', 'Switch to the top view while parking and back when driving.'],
       ['showMusic', 'Music', 'What the head unit is playing, in a card at the bottom with its controls. Needs the HUD\'s Android app on the car\'s screen.'],
-      ['showNav', 'Navigation', 'The next turn from the head unit\'s navigation, in a card at the top and as an arrow on the road once it\'s near. ' +
+      ['showNav', 'Navigation', 'The next turn from the head unit\'s navigation, in a card at the top and as an arrow on the road once it\'s near, ' +
+        'and the route on the map in violet: bright as far as it can be told from the next turn, fainter where it is only likely. ' +
         'Needs the HUD\'s Android app on the car\'s screen.'],
     ]));
   }
@@ -391,6 +434,32 @@ export class Settings {
       this.app.segmented([['0', 'Off'], ['10', '10 km'], ['25', '25 km'], ['50', '50 km'], ['100', '100 km']], String(s.mapPrefetchKm ?? 25), v => set('mapPrefetchKm', Number(v))),
       this.mapStatus));
     this.showMapStatus();
+    // Ordnance Survey's road widths on top of OSM in Great Britain (osroads.js, OsRoads.kt)
+    const src = s.mapSource === 'os' || s.mapSource === 'osm' ? s.mapSource : 'auto';
+    const os = src !== 'osm';
+    const cn = currentCountry();
+    this.osStatus = el('small.cur', '');
+    const key = el('input.sig-filter', { type: 'password', autocomplete: 'off', spellcheck: false, placeholder: 'OS Data Hub API key',
+      value: s.osKey || '', onchange: (e) => { set('osKey', e.target.value.trim()); this.showOsStatus(); } });
+    const cap = el('input', { type: 'number', min: 0, step: 500, value: Number(s.osCap) || 5000,
+      onchange: (e) => set('osCap', Math.max(0, Math.round(Number(e.target.value) || 0))) });
+    body.append(el('div.section', el('h3', 'Map data'),
+      el('p.desc', 'Where the roads come from. OpenStreetMap everywhere; in Great Britain, Ordnance Survey can add how wide each road ' +
+        'really is (kerb to kerb), which OSM rarely says there, so the lanes are drawn at their real width and single-track lanes ' +
+        'show as one lane, and its surveyed outlines of the road, pavements and central reservations, so junctions, kerbs and ' +
+        'islands are drawn where they really are. Lane counts, lines, arrows and speed limits still come from OSM.'),
+      el('p.desc', 'Auto adds Ordnance Survey in the UK (with a key below) and uses OpenStreetMap alone everywhere else' +
+        (cn ? `; now ${cn.gb ? 'OSM + Ordnance Survey' : 'OpenStreetMap'} (${cn.name}).` : '.')),
+      this.app.segmented([['auto', 'Auto'], ['osm', 'OpenStreetMap'], ['os', 'OSM + Ordnance Survey']], src, v => { set('mapSource', v); this.showOsStatus(); }),
+      ...(os ? [
+        el('p.desc', 'Needs a free OS Data Hub account (osdatahub.os.uk) on the Premium plan, which includes \u00a31,000 of premium data ' +
+          'a month at no charge, and an API project with "OS NGD API \u2013 Features" added. Paste the project\'s key here. Each area is ' +
+          'downloaded once (about 5 \u00d7 5 km, one request per 100 roads) and kept; the requests stop for the month at the limit below.'),
+        key,
+        el('div.rows', el('div.row', el('div.lbl', el('b', 'Requests a month, at most')), cap)),
+      ] : []),
+      this.osStatus));
+    this.showOsStatus();
     // where the pose's fixes and heading come from (state.js setPositionSource)
     this.positionNow = el('small.cur', '');
     body.append(el('div.section', el('h3', 'Position'),
@@ -427,6 +496,21 @@ export class Settings {
       if (!st.center) { out.textContent = 'Waiting for a position.'; return; }
       out.textContent = `Within ${st.radius_km} km: ${st.roads_ready}/${st.tiles} road tiles, ${st.features_ready}/${st.tiles} feature tiles` +
         (st.busy ? ', downloading' : '') + (st.errors ? `, ${st.errors} failed` : '');
+    }).catch(() => { out.textContent = ''; });
+  }
+
+  /** How much Ordnance Survey data the server has, and this month's requests (GET /map/os/status). */
+  showOsStatus() {
+    const out = this.osStatus;
+    if (!out) return;
+    const s = this.app.settings;
+    if (s.mapSource === 'osm') { out.textContent = ''; return; }
+    if (!s.osKey) { out.textContent = 'Paste a key to turn it on.'; return; }
+    fetch('/map/os/status').then(r => (r.ok ? r.json() : null)).then((st) => {
+      if (!st || out !== this.osStatus) return;
+      if (st.requests == null) { out.textContent = 'Needs the HUD\'s Android app.'; return; }
+      out.textContent = `${st.cells} area${st.cells === 1 ? '' : 's'} downloaded, ${st.requests} request${st.requests === 1 ? '' : 's'} this month` +
+        (st.error ? `. Last error: ${st.error}` : '');
     }).catch(() => { out.textContent = ''; });
   }
 
@@ -666,7 +750,7 @@ export class Settings {
   async renderAbout() {
     const body = this.body;
     // the app's version and its updates, as on the car controls' Software sheet (appupdate.js)
-    body.append(el('div.section', el('h3', 'Oceanfront View'), this.app.car.appUpdate.render(true)));
+    body.append(el('div.section', el('h3', 'Oceanscape'), this.app.car.appUpdate.render(true)));
     const src = { car: this.app.state && this.app.state.comma ? "The car's IBUS1/IBUS2, with the comma's ADAS bus, radar and openpilot" : "The car's IBUS1/IBUS2",
       comma: 'The comma alone (no car buses here)', replay: 'A drive the comma is replaying', none: 'Nothing yet: the car is asleep, or this isn\'t the car\'s screen' }[this.app.source];
     body.append(el('div.section', el('h3', 'Driving data'), el('div.kv', el('span', 'Source'), el('span', src))));
