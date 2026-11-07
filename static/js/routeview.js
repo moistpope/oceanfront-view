@@ -5,6 +5,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { planRoute, routeLine } from './navroute.js';
 import { NET_LINE_LIFT } from './mapsurface.js';
+import { DRUM_FADE_GLSL } from './drum.js';
 
 const HALF_W = 1.7;          // m: the ribbon's half width (its glow; the bright core is about half that)
 const LIFT = NET_LINE_LIFT + 0.004;
@@ -20,9 +21,11 @@ attribute float aAcross;
 attribute float aAlong;
 varying float vAcross;
 varying float vAlong;
+varying vec3 vDrumPos;
 #include <fog_pars_vertex>
 void main() {
   vAcross = aAcross; vAlong = aAlong;
+  vDrumPos = (modelMatrix * vec4(position, 1.0)).xyz;   // for the fade toward the drum's horizon
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
@@ -32,6 +35,9 @@ uniform vec3 uColor;
 uniform float uTime, uOpacity, uSure, uTotal, uFaint, uLift;
 varying float vAcross;
 varying float vAlong;
+varying vec3 vDrumPos;
+uniform vec2 uDrum;   // drum.js fills it (drumShader bends this material like every other)
+${DRUM_FADE_GLSL}
 #include <fog_pars_fragment>
 void main() {
   float a = abs(vAcross);
@@ -42,7 +48,7 @@ void main() {
   float strength = mix(1.0, uFaint * (1.0 - past), smoothstep(uSure - 6.0, uSure + 6.0, vAlong));
   strength *= smoothstep(1.0, 9.0, vAlong) * (1.0 - smoothstep(uTotal - 8.0, uTotal, vAlong));
   float pulse = 0.86 + 0.14 * sin((vAlong - uTime * 9.0) * 0.21);
-  float alpha = (core * 0.5 + glow * 0.36) * strength * pulse * uOpacity;
+  float alpha = (core * 0.5 + glow * 0.36) * strength * pulse * uOpacity * (1.0 - drumFade(vDrumPos));
   gl_FragColor = vec4(mix(uColor, vec3(1.0), core * uLift), alpha);
   #include <fog_fragment>
 }`;

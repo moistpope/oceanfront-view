@@ -411,6 +411,7 @@ export class CarScene {
     this.road = new RoadModel();
     this.navArrow = new NavArrow(this.road);   // the next turn, on the road (infotainment.js sets it)
     this.scene.add(this.navArrow.group);
+    fadeAtDrum(this.navArrow.material);   // on the road, so it fades toward the drum horizon with it
     this.roadOut = null;   // this frame's road (RoadModel.update)
     this.ribbons.zebra = new Ribbon(this.mats.marking, 256);
     this.scene.add(this.ribbons.zebra.mesh);
