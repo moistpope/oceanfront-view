@@ -18,7 +18,10 @@
 //          when it's the only object source there is. leadTwo is the model's lead 2 s from now
 //          (modelV2.leadsV3[1]), most often the same car as leadOne, so it only counts when it's
 //          clearly another car.
-// Each object is a constant-velocity Kalman filter over ground position and velocity. A measurement is
+// Each object is a physically constrained extended Kalman filter (physics.js PhysFilter): a kinematic bicycle
+// over its footprint's center, heading, speed, acceleration and path curvature, held to what its class and mass
+// can do, so it can't spin in place, slide sideways or accelerate harder than it could, and kept from
+// overlapping the others and our car (physics.js separate()). A measurement is
 // placed at the time it was taken (the radar's synced MeasTime; the others by their typical latency)
 // using the ego pose at that time, dead-reckoned from wheel speed and the yaw-rate gyro. Measurements
 // are processed FUSION_DELAY_S behind the present so every source is in before its time is passed, and
@@ -47,6 +50,7 @@
 // Frames: world (x, y, heading) is fixed to the ground with an arbitrary origin, reset on seek. The ego
 // frame is x forward from the front bumper, y left, like every other HUD object list.
 import { pyRound } from './dbc.js';
+import { PhysFilter, SimBody, separate, centerOf, faceOf, footprintOf, limitsOf } from './physics.js';
 
 export const FRONT_TO_REAR_AXLE = 3.85;   // m: the Ocean is 4.775 m long with its rear axle 0.93 m from the back
 export const FUSION_DELAY_S = 0.2;        // radar measurements arrive ~0.10-0.13 s after they're taken
@@ -166,41 +170,9 @@ function opNoise(rng, prob, radar) {
 }
 
 
-// ---- small dense matrices (arrays of rows) ---------------------------------------------------------
+// ---- small dense matrices (arrays of rows): physics.js's ----------------------------------------------
 
-const zeros = (n, m) => Array.from({ length: n }, () => new Array(m).fill(0));
-const eye = (n) => { const I = zeros(n, n); for (let i = 0; i < n; i++) I[i][i] = 1; return I; };
-function matmul(A, B) {
-  const n = A.length, m = B[0].length, k = B.length;
-  const C = zeros(n, m);
-  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) { let s = 0; for (let l = 0; l < k; l++) s += A[i][l] * B[l][j]; C[i][j] = s; }
-  return C;
-}
-const transpose = (A) => A[0].map((_, j) => A.map(row => row[j]));
-const matadd = (A, B) => A.map((row, i) => row.map((v, j) => v + B[i][j]));
-const matvec = (A, v) => A.map(row => row.reduce((s, a, j) => s + a * v[j], 0));
-const sub = (A, B) => A.map((row, i) => row.map((v, j) => v - B[i][j]));
-const block = (A, r0, r1, c0, c1) => A.slice(r0, r1).map(row => row.slice(c0, c1));
-
-/** Gauss-Jordan inverse with partial pivoting (n <= 4). */
-function inv(A) {
-  const n = A.length;
-  const M = A.map((row, i) => [...row, ...eye(n)[i]]);
-  for (let c = 0; c < n; c++) {
-    let p = c;
-    for (let i = c + 1; i < n; i++) if (Math.abs(M[i][c]) > Math.abs(M[p][c])) p = i;
-    if (p !== c) [M[c], M[p]] = [M[p], M[c]];
-    const d = M[c][c];
-    if (d === 0) throw new Error('singular matrix');
-    for (let j = 0; j < 2 * n; j++) M[c][j] /= d;
-    for (let i = 0; i < n; i++) {
-      if (i === c) continue;
-      const f = M[i][c];
-      if (f !== 0) for (let j = 0; j < 2 * n; j++) M[i][j] -= f * M[c][j];
-    }
-  }
-  return M.map(row => row.slice(n));
-}
+import { zeros, eye, matmul, transpose, matadd, matvec, sub, block, inv } from './physics.js';
 
 /** d^T S^-1 d for a 2x2 S. */
 function quad2(S, d) {
@@ -317,18 +289,28 @@ export class Meas {
 const SOURCE_RANK = { adas: 0, radar: 1, op: 2 };   // whose class / size / heading wins
 const RANK_SRC = { 0: 'adas', 1: 'radar', 2: 'op' };
 
+// how sure a source's heading is (rad, 1 sigma); only used while an object is slow, where its motion can't tell
+const HEADING_SIGMA = { adas: 0.35, radar: 0.25, op: 0.6 };
+const HEADING_MEAS_MAX_V = 3.0;   // m/s: faster, the heading is the motion's
+const EGO_W = 1.98, EGO_L = 4.775; // m: our footprint (the rear axle 0.925 m from the back)
+
+/** A measured class as the physical model knows it. */
+const physClass = (cls) => (cls && limitsOf(cls) !== limitsOf('unknown') ? cls : 'unknown');
+
 class Track {
-  constructor(tid, t, z, Rp, v, Rv) {
+  /** z: the face a sensor at o saw (world); Rp its noise; v, Rv: a measured velocity over ground (or null);
+   *  psi0: a heading guess (rad) and its sigma; vEgo our speed (a prior for an object's). */
+  constructor(tid, t, z, o, Rp, v, Rv, m, psi0, sPsi0, vEgo) {
     this.id = tid;
     this.t = t;
-    this.X = [z[0], z[1], 0.0, 0.0];
-    this.P = zeros(4, 4);
-    this.P[0][0] = Rp[0][0]; this.P[0][1] = Rp[0][1]; this.P[1][0] = Rp[1][0]; this.P[1][1] = Rp[1][1];
-    this.P[2][2] = this.P[3][3] = 25.0;
-    if (v !== null) {
-      this.X[2] = v[0]; this.X[3] = v[1];
-      this.P[2][2] = Rv[0][0]; this.P[2][3] = Rv[0][1]; this.P[3][2] = Rv[1][0]; this.P[3][3] = Rv[1][1];
-    }
+    const cls = physClass(m.cls);
+    const [w, l] = cls === 'unknown' && !m.dims ? [0, 0] : footprintOf(cls, m.dims);
+    const c = centerOf(z[0], z[1], o[0], o[1], w, l, psi0);
+    let v0 = vEgo, sV = Math.max(6, 0.6 * Math.abs(vEgo));
+    if (v !== null) { v0 = v[0] * Math.cos(psi0) + v[1] * Math.sin(psi0); sV = 2.0; }
+    if (limitsOf(cls).walks) { v0 = 0; sV = 2.0; }
+    this.f = new PhysFilter(c[0], c[1], Rp, psi0, sPsi0, v0, sV, cls);
+    this.f.dims = m.dims;
     this.first = t;
     this.n = 0;
     this.last = {};        // src -> time of its last measurement
@@ -337,7 +319,6 @@ class Track {
     this.cls = null;
     this.clsRank = 99;
     this.dims = null;
-    this.heading = null;   // world, rad
     this.headingRank = 99;
     this.visionT = null;   // last time a camera positively classified it
     this.thin = 0.0;       // widest-for-its-length the radar has drawn it (w/l)
@@ -354,50 +335,43 @@ class Track {
     return v.length ? Math.max(...v) : this.first;
   }
 
-  speed() { return hypot(this.X[2], this.X[3]); }
+  get pos() { return this.f.pos; }
+  get vel() { return this.f.vel; }
+  get heading() { return this.f.X[2]; }
+  speed() { return this.f.speed; }
 
   predict(t) {
     const dt = t - this.t;
     if (dt === 0) return;
-    const F = eye(4);
-    F[0][2] = F[1][3] = dt;
-    this.X = matvec(F, this.X);
-    this.P = matmul(matmul(F, this.P), transpose(F));
-    if (dt > 0) {
-      const q = ACCEL_SIGMA ** 2;
-      const a = dt ** 4 / 4, b = dt ** 3 / 2, c = dt ** 2;
-      const Q = [[a, 0, b, 0], [0, a, 0, b], [b, 0, c, 0], [0, b, 0, c]];
-      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) this.P[i][j] += q * Q[i][j];
-    }
+    if (dt > 0) this.f.predict(dt);
     this.t = t;
   }
 
-  maha(z, Rp) {
-    const S = matadd(block(this.P, 0, 2, 0, 2), Rp);
-    return quad2(S, [z[0] - this.X[0], z[1] - this.X[1]]);
+  /** Its size for placing it along the line of sight: none when nothing has said what it is or how big
+   *  (a radar point target: a sign, a post, or a car the radar sees as a point), so its center is the point seen. */
+  get sight() { return this.f.cls === 'unknown' && !this.f.dims ? [0, 0] : this.f.footprint; }
+
+  /** Where a face seen from o puts this object's center, by its own heading and size. */
+  centerFor(z, o) {
+    const [w, l] = this.sight;
+    return centerOf(z[0], z[1], o[0], o[1], w, l, this.f.X[2]);
   }
 
-  update(z, Rp, v, Rv) {
-    let H, zz, R;
-    if (v === null) {
-      H = zeros(2, 4);
-      H[0][0] = H[1][1] = 1;
-      zz = z; R = Rp;
-    } else {
-      H = eye(4);
-      zz = [z[0], z[1], v[0], v[1]];
-      R = zeros(4, 4);
-      R[0][0] = Rp[0][0]; R[0][1] = Rp[0][1]; R[1][0] = Rp[1][0]; R[1][1] = Rp[1][1];
-      R[2][2] = Rv[0][0]; R[2][3] = Rv[0][1]; R[3][2] = Rv[1][0]; R[3][3] = Rv[1][1];
-    }
-    const Ht = transpose(H);
-    const S = matadd(matmul(matmul(H, this.P), Ht), R);
-    const K = matmul(matmul(this.P, Ht), inv(S));
-    const hx = matvec(H, this.X);
-    const innov = zz.map((zi, i) => zi - hx[i]);
-    const dx = matvec(K, innov);
-    this.X = this.X.map((xi, i) => xi + dx[i]);
-    this.P = matmul(sub(eye(4), matmul(K, H)), this.P);
+  maha(z, o, Rp) {
+    const c = this.centerFor(z, o);
+    const S = matadd(block(this.f.P, 0, 2, 0, 2), Rp);
+    return quad2(S, [c[0] - this.f.X[0], c[1] - this.f.X[1]]);
+  }
+
+  update(z, o, Rp, v, Rv) {
+    this.f.updatePos(this.centerFor(z, o), Rp);
+    if (v !== null) this.f.updateVel(v, Rv);
+    this.f.settle();
+  }
+
+  /** A source's heading (world, rad), while the object is slow enough that its motion doesn't say. */
+  updateHeading(psi, src) {
+    if (this.f.speed < HEADING_MEAS_MAX_V || Math.sqrt(this.f.P[2][2]) > 0.5) this.f.updateHeading(psi, HEADING_SIGMA[src] ?? 0.5);
   }
 }
 
@@ -458,6 +432,7 @@ export class WorldModel {
       i = j;
     }
     this._merge();
+    this._separate(cutoff);
     this._prune(cutoff);
     this._confidence(cutoff, paused);
     return this._output(now);
@@ -474,6 +449,8 @@ export class WorldModel {
     this.srcSeen[batch[0].src] = t;
     const pose = this.odo.pose(t);
     const R = rot(pose[2]), Rt = transpose(R);
+    const o = toWorld(pose, 0, 0);   // where the sensors look from: our front bumper
+    const vEgo = this.odo.speed(t);
     const meas = [];
     for (const m of batch) {
       const z = toWorld(pose, m.x, m.y);
@@ -491,13 +468,14 @@ export class WorldModel {
 
     const assigned = new Map();   // meas index -> track id
     const used = new Set();
-    const near = (tr, m, z) => hypot(z[0] - tr.X[0], z[1] - tr.X[1]) < GATE_M + 2.5 * Math.max(m.sx, m.sy);
+    // gated on the center the face puts each track at, so a long truck's rear and its center aren't 5 m apart
+    const near = (tr, m, z) => { const c = tr.centerFor(z, o); return hypot(c[0] - tr.pos[0], c[1] - tr.pos[1]) < GATE_M + 2.5 * Math.max(m.sx, m.sy); };
 
     // a source's own track id keeps feeding the same object while it's plausible
     meas.forEach(([m, z, Rg], k) => {
       const tid = this.sticky.get(`${m.src}:${m.sid}`);
       const tr = tid !== undefined ? this.tracks.get(tid) : undefined;
-      if (tr !== undefined && !used.has(tid) && near(tr, m, z) && tr.maha(z, Rg) < 4 * GATE) {
+      if (tr !== undefined && !used.has(tid) && near(tr, m, z) && tr.maha(z, o, Rg) < 4 * GATE) {
         assigned.set(k, tid);
         used.add(tid);
       }
@@ -508,7 +486,7 @@ export class WorldModel {
       if (assigned.has(k)) return;
       for (const [tid, tr] of this.tracks) {
         if (used.has(tid) || !near(tr, m, z)) continue;
-        const d2 = tr.maha(z, Rg);
+        const d2 = tr.maha(z, o, Rg);
         if (d2 < GATE) cands.push([d2, k, tid]);
       }
     });
@@ -525,14 +503,20 @@ export class WorldModel {
       if (tid === undefined) {
         if (m.src === 'op' && (m.info.modelProb ?? 1.0) < OP_MIN_PROB) return;
         tid = this.nextId++;
-        this.tracks.set(tid, new Track(tid, t, z, Rp, v, Rv));
+        // which way it faces: as a source says, else as it moves, else (most of what's around us) as we do, though
+        // loosely: an oncoming car turns itself round once it's seen to move toward us (PhysFilter.settle)
+        let psi0 = pose[2], sPsi0 = 1.2;
+        if (m.heading !== null) { psi0 = pose[2] + m.heading * Math.PI / 180; sPsi0 = HEADING_SIGMA[m.src] ?? 0.5; }
+        else if (v !== null && hypot(v[0], v[1]) > HEADING_FROM_MOTION) { psi0 = Math.atan2(v[1], v[0]); sPsi0 = 0.3; }
+        this.tracks.set(tid, new Track(tid, t, z, o, Rp, v, Rv, m, psi0, sPsi0, vEgo));
         innovation = [0, 0];
       } else {
         const tr = this.tracks.get(tid);
-        innovation = [z[0] - tr.X[0], z[1] - tr.X[1]];
+        const c = tr.centerFor(z, o);
+        innovation = [c[0] - tr.pos[0], c[1] - tr.pos[1]];
+        tr.update(z, o, Rp, v, Rv);
       }
       const tr = this.tracks.get(tid);
-      tr.update(z, Rp, v, Rv);
       this._annotate(tr, m, matvec(Rt, innovation), pose[2]);
       this.sticky.set(`${m.src}:${m.sid}`, tid);
     });
@@ -556,10 +540,12 @@ export class WorldModel {
       if (m.dims && m.dims[0] >= THIN_MIN_W) tr.thin = Math.max(tr.thin, m.dims[0] / m.dims[1]);
     }
     if (m.heading !== null && rank <= tr.headingRank) {
-      const hw = h + m.heading * Math.PI / 180;
-      tr.heading = (tr.heading === null || rank < tr.headingRank) ? hw : tr.heading + 0.3 * wrap(hw - tr.heading);
+      tr.updateHeading(h + m.heading * Math.PI / 180, m.src);
       tr.headingRank = rank;
     }
+    // the physical model follows the class and size (they set its limits and its footprint)
+    tr.f.cls = physClass(tr.cls);
+    tr.f.dims = tr.dims;
     if (!tr.confirmed) {
       if (m.src === 'op') {   // alone, only once it has held for a second with neither the radar nor the ADAS around
         tr.confirmed = m.t - tr.first >= 1.0 && ['radar', 'adas'].every(s => m.t - (this.srcSeen[s] ?? -1e9) > SOURCE_GONE_S);
@@ -569,7 +555,10 @@ export class WorldModel {
     }
   }
 
-  _merge() {
+  /** Tracks that are one object: the same source id split in two, two copies close and alike, or (`overlapping`,
+   *  pairs of ids from physics.js separate()) two that physically overlap most of a car and move alike. */
+  _merge(overlapping = []) {
+    const forced = new Set(overlapping.map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
     const ids = [...this.tracks.keys()].sort((a, b) => a - b);
     const gone = new Set();
     for (let ai = 0; ai < ids.length; ai++) {
@@ -581,20 +570,23 @@ export class WorldModel {
         if (gone.has(b)) continue;
         const B = this.tracks.get(b);
         if (B.t !== A.t) B.predict(A.t);
-        const d = [A.X[0] - B.X[0], A.X[1] - B.X[1]];
+        const d = [A.pos[0] - B.pos[0], A.pos[1] - B.pos[1]];
         const same = sameSourceId(A, B);
+        const overlaps = forced.has(`${a}:${b}`);
         let keep, drop;
         if (same) {
           // one object split in two (its measurement jumped out of its own track's gate): keep the copy the
           // source fed last, which is where the object is now
           if (hypot(d[0], d[1]) > SAME_ID_M) continue;
           [keep, drop] = A.lastT >= B.lastT ? [A, B] : [B, A];
+        } else if (overlaps) {
+          [keep, drop] = A.n >= B.n ? [A, B] : [B, A];
         } else {
-          if (hypot(d[0], d[1]) > MERGE_M || quad2(matadd(block(A.P, 0, 2, 0, 2), block(B.P, 0, 2, 0, 2)), d) > MERGE_GATE) continue;
+          if (hypot(d[0], d[1]) > MERGE_M || quad2(matadd(block(A.f.P, 0, 2, 0, 2), block(B.f.P, 0, 2, 0, 2)), d) > MERGE_GATE) continue;
           // a new track's velocity is barely known (the radar's lateral velocity especially), so speeds
           // only have to agree within what the two estimates allow
-          const dv = [A.X[2] - B.X[2], A.X[3] - B.X[3]];
-          if (hypot(dv[0], dv[1]) > MERGE_V && quad2(matadd(block(A.P, 2, 4, 2, 4), block(B.P, 2, 4, 2, 4)), dv) > MERGE_GATE_V) continue;
+          const dv = [A.vel[0] - B.vel[0], A.vel[1] - B.vel[1]];
+          if (hypot(dv[0], dv[1]) > MERGE_V && quad2(matadd(A.f.velCov(), B.f.velCov()), dv) > MERGE_GATE_V) continue;
           [keep, drop] = A.n >= B.n ? [A, B] : [B, A];
         }
         for (const src in drop.sources) {
@@ -609,9 +601,9 @@ export class WorldModel {
         if (drop.clsRank < keep.clsRank) {
           keep.cls = drop.cls; keep.clsRank = drop.clsRank; keep.dims = drop.dims || keep.dims;
         }
-        if (drop.heading !== null && drop.headingRank < keep.headingRank) {
-          keep.heading = drop.heading; keep.headingRank = drop.headingRank;
-        }
+        if (drop.headingRank < keep.headingRank) keep.headingRank = drop.headingRank;
+        keep.f.cls = physClass(keep.cls);
+        keep.f.dims = keep.dims;
         if (drop.visionT !== null && (keep.visionT === null || drop.visionT > keep.visionT)) keep.visionT = drop.visionT;
         keep.thin = Math.max(keep.thin, drop.thin);
         keep.radarAge = Math.max(keep.radarAge, drop.radarAge);
@@ -626,6 +618,18 @@ export class WorldModel {
     for (const tid of gone) this.tracks.delete(tid);
   }
 
+  /** No two road users in one place, and none in ours (physics.js separate()), as of t; those that overlap most of
+   *  a car and move alike are one object. */
+  _separate(t) {
+    if (!this.tracks.size) return;
+    for (const tr of this.tracks.values()) tr.predict(t);
+    const pose = this.odo.pose(t);
+    const back = FRONT_TO_REAR_AXLE - EGO_L / 2;   // our footprint's center, ahead of the rear axle
+    const ego = [pose[0] + back * Math.cos(pose[2]), pose[1] + back * Math.sin(pose[2]), EGO_W, EGO_L, pose[2]];
+    const same = separate([...this.tracks.values()].map(tr => ({ f: tr.f, id: tr.id })), ego);
+    if (same.length) this._merge(same);
+  }
+
   _prune(cutoff) {
     for (const tid of [...this.tracks.keys()]) {
       const tr = this.tracks.get(tid);
@@ -636,7 +640,7 @@ export class WorldModel {
       }
       const stale = cutoff - tr.lastT;
       const limit = tr.speed() < STATIONARY_SPEED ? COAST_STATIONARY_S : COAST_MOVING_S;
-      if ((!tr.confirmed && stale > 0.3) || stale > limit || tr.P[0][0] + tr.P[1][1] > 50) this.tracks.delete(tid);
+      if ((!tr.confirmed && stale > 0.3) || stale > limit || tr.f.P[0][0] + tr.f.P[1][1] > 50) this.tracks.delete(tid);
     }
     for (const [key, tid] of [...this.sticky]) if (!this.tracks.has(tid)) this.sticky.delete(key);
   }
@@ -655,7 +659,8 @@ export class WorldModel {
     // view past it: one a camera has, or a moving one the radar has classified and tracked for a while
     for (const [tid, tr] of this.tracks) {
       const dt = t - tr.t;
-      const [x, y] = toEgo(pose, tr.X[0] + tr.X[2] * dt, tr.X[1] + tr.X[3] * dt);
+      const S = tr.f.ahead(dt);
+      const [x, y] = toEgo(pose, S[0], S[1]);
       const xr = x + FRONT_TO_REAR_AXLE;
       if (UNSEEN_X[0] < x && x < UNSEEN_X[1] && Math.abs(y - kappa * xr * xr / 2) < CORRIDOR_HALF_W) ahead.set(tid, x);
     }
@@ -702,25 +707,44 @@ export class WorldModel {
     const h = pose[2];
     const Rt = transpose(rot(h));
     const out = [];
-    for (const tr of this.tracks.values()) {
-      if (!tr.confirmed) continue;
-      const dt = now - tr.t;
-      const wx = tr.X[0] + tr.X[2] * dt, wy = tr.X[1] + tr.X[3] * dt;
-      const [x, y] = toEgo(pose, wx, wy);
-      const [vx, vy] = matvec(Rt, [tr.X[2], tr.X[3]]);
-      const speed = tr.speed();
-      let heading, hsrc;
-      if (speed > HEADING_FROM_MOTION) { heading = Math.atan2(tr.X[3], tr.X[2]) - h; hsrc = 'motion'; }
-      else if (tr.heading !== null) { heading = tr.heading - h; hsrc = RANK_SRC[tr.headingRank]; }
-      else { heading = 0.0; hsrc = null; }
-      const sxy = matmul(matmul(Rt, block(tr.P, 0, 2, 0, 2)), transpose(Rt));
+    // what's drawn: each confirmed track's body (physics.js SimBody) driven toward its estimate as of now, then the
+    // bodies kept apart and off our car
+    const shown = [...this.tracks.values()].filter(tr => tr.confirmed);
+    for (const tr of shown) {
+      const T = tr.f.ahead(now - tr.t);
+      if (!tr.body) { tr.body = new SimBody(tr.f); tr.body.X = T.slice(); tr.bodyT = now; }
+      if (now < tr.bodyT) { tr.body.X = T.slice(); tr.bodyT = now; }   // time went back (a seek)
+      tr.body.follow(tr.f, T, now - tr.bodyT);
+      tr.bodyT = now;
+    }
+    const back = FRONT_TO_REAR_AXLE - EGO_L / 2;
+    separate(shown.map(tr => ({ f: tr.body, id: tr.id })), [pose[0] + back * Math.cos(h), pose[1] + back * Math.sin(h), EGO_W, EGO_L, h]);
+    for (const tr of shown) {
+      const S = tr.body.X;
+      const [w, l] = tr.f.footprint;
+      const o = toWorld(pose, 0, 0);
+      const face = faceOf(S[0], S[1], o[0], o[1], ...tr.sight, S[2]);
+      const [x, y] = toEgo(pose, face[0], face[1]);   // the near face, as the sensors report it
+      const [cx, cy] = toEgo(pose, S[0], S[1]);       // the footprint's center
+      const v = S[3];
+      const [vx, vy] = matvec(Rt, [v * Math.cos(S[2]), v * Math.sin(S[2])]);
+      const speed = Math.abs(v);
+      const heading = S[2] - h;
+      // where its heading comes from: its motion once it moves, else the source that last set it
+      const hsrc = speed > HEADING_FROM_MOTION ? 'motion' : tr.headingRank < 99 ? RANK_SRC[tr.headingRank] : null;
+      const sxy = matmul(matmul(Rt, block(tr.f.P, 0, 2, 0, 2)), transpose(Rt));
       const sources = Object.keys(tr.sources).sort((a, b) => SOURCE_RANK[a] - SOURCE_RANK[b])
         .filter(src => now - tr.sources[src].t < COAST_STATIONARY_S + 1)
         .map(src => { const s = tr.sources[src]; return { src, id: s.id, dx: pyRound(s.dx, 2), dy: pyRound(s.dy, 2), age: pyRound(now - s.t, 2), ...s.info }; });
       out.push({
         id: tr.id,
         x: pyRound(x, 2), y: pyRound(y, 2),
+        cx: pyRound(cx, 2), cy: pyRound(cy, 2),
         vx: pyRound(vx, 2), vy: pyRound(vy, 2), speed: pyRound(speed, 2),
+        // the physical model: speed along its heading (signed), acceleration, path curvature and the yaw rate and
+        // front-wheel angle they make, and the mass its class and size suggest
+        v: pyRound(v, 2), accel: pyRound(S[4], 2), curvature: pyRound(S[5], 4), yawRate: pyRound(v * S[5] * 180 / Math.PI, 1),
+        steer: pyRound(tr.body.delta * 180 / Math.PI, 1), mass: Math.round(tr.f.mass), fw: pyRound(w, 2), fl: pyRound(l, 2),
         heading: pyRound(wrap(heading) * 180 / Math.PI, 1), headingSrc: hsrc,
         cls: tr.cls || 'unknown',
         w: tr.dims ? tr.dims[0] : null, l: tr.dims ? tr.dims[1] : null, h: tr.dims ? tr.dims[2] : null,
