@@ -80,8 +80,10 @@ media sessions and notifications:
 - **Media:** every active media session is followed, and the card shows the one playing, else the most
   recent: title, artist, album, art, position and length. Its buttons go to that session's controls.
 - **Navigation:** the notification in the *navigation* category, or an ongoing one from a known
-  navigation app (Google Maps, Waze, HERE, Sygic, OsmAnd, MapQuest, Organic Maps). Its words go to the
-  page as they are (title, text, sub text), and the page reads the distance, the maneuver and the street
+  navigation app (Google Maps, Waze, HERE, Sygic, OsmAnd, MapQuest, Organic Maps, ABRP). ABRP's counts
+  only while it gives a distance, as it keeps a notification up while it isn't guiding too (planning,
+  live data). With two apps guiding at once, the most recently updated shows, and the other when it goes.
+  Its words go to the page as they are (title, text, sub text, text lines), and the page reads the distance, the maneuver and the street
   from them, along with the maneuver's picture (Google Maps draws it as the large icon). So the reading
   can be fixed by updating openpilot, without reinstalling the app.
 

@@ -37,7 +37,9 @@ export function maneuverOf(text) {
 // (as written, and m), what to do there, the street, and the trip line (time, distance, ETA).
 export function parseNav(raw) {
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
-  const fields = [raw.title, raw.text, raw.bigText].map(clean).filter(Boolean);
+  // ABRP and others may put the turn in the text lines of an inbox-style notification
+  const app = clean(raw.app).toLowerCase();   // a title that's only the app's name says nothing
+  const fields = [raw.title, raw.text, raw.bigText, ...(raw.lines || '').split('\n')].map(clean).filter(f => f && f.toLowerCase() !== app);
   let dist = null, instruction = '';
   for (const f of fields) {
     const m = DIST_RE.exec(f);
@@ -47,7 +49,9 @@ export function parseNav(raw) {
       const decimals = (m[1].split(/[.,]/)[1] || '').length;
       const half = decimals ? 0.5 * 10 ** -decimals : value % 100 === 0 ? 50 : value % 50 === 0 ? 25 : value % 10 === 0 ? 5 : 0.5;
       dist = { text: `${m[1]} ${m[2]}`, value: m[1], unit: m[2], m: value * k, half: half * k };
-      const rest = clean(f.replace(m[0], '').replace(/^(in|within)\b\s*/i, '').replace(/^[,·•\-–—:\s]+|[,·•\-–—:\s]+$/g, ''));
+      // the words round the distance: "In 300 m, turn right" or "Turn right in 300 m"
+      const rest = clean(f.replace(m[0], ' ').replace(/^\s*(in|within)\b\s*/i, '').replace(/\s+(in|within)\s*(?=[,·•\-–—:]|$)/i, ' ')
+        .replace(/^[,·•\-–—:\s]+|[,·•\-–—:\s]+$/g, ''));
       if (rest.length > 2) instruction = rest;
     } else if (!instruction && !TRIP_RE.test(f)) instruction = f;
   }
