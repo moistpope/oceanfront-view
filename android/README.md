@@ -1,4 +1,4 @@
-# Oceanfront View on the car's screen
+# Oceanscape on the car's screen
 
 An Android app that shows the [HUD page](../README.md) full screen on the car's own screen (Pulse,
 the add-on board). The page and everything it needs (its scripts, three.js, the car model, the DBCs)
@@ -228,13 +228,13 @@ same one after installing it): `versionName` in `app/build.gradle.kts` to the re
 tag is `v<versionName>`), and `versionCode` up by one. `tools/release.sh` does that and the rest:
 
 ```
-tools/release.sh                 # 1.0 -> 1.1: bump, run the tests, build, commit "Oceanfront View v1.1", tag v1.1
+tools/release.sh                 # 1.0 -> 1.1: bump, run the tests, build, commit "Oceanscape v1.1", tag v1.1
 tools/release.sh patch           # 1.1 -> 1.1.1 (or major, or a version: tools/release.sh 2.0)
 tools/release.sh --publish       # ...then push the commit and the tag and create the GitHub release with the APK (gh)
 ```
 
 It wants a clean checkout, puts the version back if the tests or the build fail, and names the APK
-`app/build/outputs/apk/release/oceanfront-view-v<version>.apk`. Without `--publish` it prints the
+`app/build/outputs/apk/release/oceanscape-v<version>.apk`. Without `--publish` it prints the
 push and `gh release create` commands to run.
 
 Build releases with the same debug key as the APKs already on cars (the `~/.android/debug.keystore`

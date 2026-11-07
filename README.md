@@ -1,4 +1,6 @@
-# Oceanfront View
+# Oceanscape
+
+Formerly Oceanfront View. Includes work from BenKayUK's fork, [OceanScape](https://github.com/benkayuk/oceanscape).
 
 A Tesla-style car view for the Fisker Ocean's center screen: a 3D model of the car with the lanes, cars,
 signs and lights its ADAS sees, the road from the map, live car state and controls, music and navigation.

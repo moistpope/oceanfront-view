@@ -2,7 +2,7 @@
   "name": "oceanfront-view",
   "private": true,
   "type": "module",
-  "description": "Oceanfront View: the Fisker Ocean HUD page, its world-model worker and the Node tools. type: module marks the page's scripts as ES modules for Node; the browser loads them as modules anyway.",
+  "description": "Oceanscape: the Fisker Ocean HUD page, its world-model worker and the Node tools. type: module marks the page's scripts as ES modules for Node; the browser loads them as modules anyway.",
   "scripts": {
     "test": "node --test static/js/world/tests/*.test.js",
     "serve": "python3 serve.py"

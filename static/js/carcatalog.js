@@ -541,7 +541,7 @@ export const CATEGORIES = [
     id: 'software', label: 'Software', icon: 'download', system: true,
     sections: [
       // this app: its version and its updates from the repository's releases (appupdate.js)
-      { kind: 'app', title: 'Oceanfront View' },
+      { kind: 'app', title: 'Oceanscape' },
       {
         title: 'FiskerOS',
         controls: [

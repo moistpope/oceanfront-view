@@ -1,4 +1,4 @@
-// Oceanfront View entry point: renders the car view from the car's own buses (IBUS1/IBUS2, through the Android
+// Oceanscape entry point: renders the car view from the car's own buses (IBUS1/IBUS2, through the Android
 // app), joins the comma's stream when it is there, and wires the controls.
 import { $, $$, el, api, fmtTime, iconSvg, setClass, setText, store, save } from './util.js';
 import { CarScene } from './scene.js';

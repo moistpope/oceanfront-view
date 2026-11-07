@@ -1,4 +1,4 @@
-# Oceanfront View internals
+# Oceanscape internals
 
 How the HUD decodes, fuses and draws what it shows: the detail behind the [README](README.md).
 

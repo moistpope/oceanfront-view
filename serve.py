@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Oceanfront View dev server: serves the HUD page from this checkout the way the Android app's LocalServer
+Oceanscape dev server: serves the HUD page from this checkout the way the Android app's LocalServer
 does on the car, and relays the comma bridge's endpoints to a sunnypilot device.
 
   python3 serve.py                              # http://localhost:18088, the page alone (it shows "offline")
@@ -126,7 +126,7 @@ def main() -> None:
   ThreadingHTTPServer.daemon_threads = True
   ThreadingHTTPServer.allow_reuse_address = True
   httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-  print(f"Oceanfront View at http://{args.host}:{args.port}/" + (f", bridge {BRIDGE[0]}:{BRIDGE[1]}" if BRIDGE else ", no bridge (offline)"))
+  print(f"Oceanscape at http://{args.host}:{args.port}/" + (f", bridge {BRIDGE[0]}:{BRIDGE[1]}" if BRIDGE else ", no bridge (offline)"))
   try:
     httpd.serve_forever()
   except KeyboardInterrupt:
