@@ -19,7 +19,7 @@
 // A style's profile says what it needs of that and how its sheet takes the shape (DEFAULT_PROFILE).
 import * as THREE from '../../vendor/three.module.min.js';
 import { FIELD_GLSL } from '../ground.js';
-import { MAX_VEH, DEF, LINE_H, BASE_LIGHT, SURFACE_GLSL } from './glsl.js';
+import { MAX_VEH, DEF, LINE_H, BASE_LIGHT, SURFACE_GLSL, STYLE_GLSL } from './glsl.js';
 import { buildEgoMap } from './egomap.js';
 
 export const DEFAULT_PROFILE = {
@@ -126,6 +126,17 @@ float tailBake(vec2 p) {
   return t;
 }`;
 
+// the light map's size: the road map's area at 16 cm a texel
+const LIGHT_W = 320, LIGHT_H = 896;
+// one texel of the light map: the surface's height there (with our car on it), its shadow and occlusion
+const LIGHT_FS = `
+${STYLE_GLSL}
+varying vec2 vUv;
+void main() {
+  vec2 p = vec2(mix(uDefB.x, uDefB.y, vUv.x), mix(uDefB.w, uDefB.z, vUv.y));
+  float h = heightAt(p);
+  gl_FragColor = vec4(shadowMarch(p, h), aoMarch(p, h), 0.0, 1.0);
+}`;
 const QUAD_VS = `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 const BAKE_FS = `
 ${SURFACE_GLSL}
@@ -188,6 +199,7 @@ export class GroundSurface {
     this.covCam.layers.set(2);
     // the lines' colors spread about 30 cm, at half the road map's resolution in half floats, for their halo
     const BW = DEF.w / 2, BH = DEF.h / 2, texel = (DEF.x1 - DEF.x0) / BW;
+    const across = texel / ((DEF.z1 - DEF.z0) / BH);   // the blur's steps along the road in its (longer) texels, so it spreads as far both ways
     const half = () => new THREE.WebGLRenderTarget(BW, BH, { type: THREE.HalfFloatType, depthBuffer: false });
     this.glowRT = [half(), half()];
     // ...and spread again, about a metre, for their bloom
@@ -195,11 +207,15 @@ export class GroundSurface {
     this.sigmaHalo = 0.3 / texel;
     this.blurMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: BLUR_FS, depthTest: false, depthWrite: false,
       uniforms: { tSrc: { value: null }, uStep: { value: new THREE.Vector2() }, uLod: { value: 1 }, uSigma: { value: this.sigmaHalo } } });
-    this.blurStep = [new THREE.Vector2(1 / BW, 0), new THREE.Vector2(0, 1 / BH)];
-    this.bloomStep = [new THREE.Vector2(2 / BW, 0), new THREE.Vector2(0, 2 / BH)];
+    this.blurStep = [new THREE.Vector2(1 / BW, 0), new THREE.Vector2(0, across / BH)];
+    this.bloomStep = [new THREE.Vector2(2 / BW, 0), new THREE.Vector2(0, 2 * across / BH)];
     this.blurScene = fullscreen(this.blurMat);
     // the height field, baked over the road map's area
-    this.heightRT = new THREE.WebGLRenderTarget(512, 1456, { type: THREE.HalfFloatType, depthBuffer: false });
+    this.heightRT = new THREE.WebGLRenderTarget(512, 1024, { type: THREE.HalfFloatType, depthBuffer: false });
+    // the light map over it: the key light's shadow and the creases' occlusion, baked once a frame (glsl.js shadowMarch,
+    // aoMarch) at 16 cm, which the styles read instead of marching the height field for every pixel
+    this.lightRT = new THREE.WebGLRenderTarget(LIGHT_W, LIGHT_H, { depthBuffer: false });
+    this.lightRT.texture.minFilter = this.lightRT.texture.magFilter = THREE.LinearFilter;
 
     // the model's uniforms and the light rig's, shared by every style's materials (with the road field's, ground.js)
     this.uniforms = Object.assign({
@@ -207,6 +223,7 @@ export class GroundSurface {
       uVehP: { value: new Float32Array(MAX_VEH) },
       uNVeh: { value: 0 }, uDrape: { value: DEFAULT_PROFILE.drape }, tEgo: { value: egoTex }, uEgoOn: { value: 0 }, uEgoSharp: { value: 0 },
       tDef: { value: this.defRT.texture }, tHeight: { value: this.heightRT.texture }, tCov: { value: this.covRT.texture },
+      tLight: { value: this.lightRT.texture },
       tGlow: { value: this.glowRT[1].texture }, tBloom: { value: this.bloomRT[1].texture }, uDark: { value: 0 },
       uDefB: { value: new THREE.Vector4(DEF.x0, DEF.x1, DEF.z0, DEF.z1) }, uLineH: { value: LINE_H }, uCrisp: { value: 0 },
       uRidgeD: { value: Array.from({ length: RIDGE_MAX }, () => new THREE.Vector2()) }, uRidgeS: { value: new Float32Array(RIDGE_MAX).fill(0.5) },
@@ -218,6 +235,8 @@ export class GroundSurface {
 
     this.bakeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.bakeScene = fullscreen(new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: BAKE_FS, uniforms: this.uniforms, depthTest: false, depthWrite: false }));
+    this.lightScene = fullscreen(new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: LIGHT_FS, uniforms: this.uniforms,
+      defines: { LIGHT_BAKE: 1 }, depthTest: false, depthWrite: false }));
     this.lead = null;           // the car we follow this frame: { X, Z (scene), fx, fz (its heading), l, w (half length, half width), gap (m), a }
     this._swaps = new Map();    // line colors -> the materials they recolor (_colors)
     this._c = new THREE.Color();
@@ -401,6 +420,8 @@ export class GroundSurface {
     }
     R.setRenderTarget(this.heightRT);
     R.render(this.bakeScene, this.bakeCam);
+    R.setRenderTarget(this.lightRT);
+    R.render(this.lightScene, this.bakeCam);
     R.setRenderTarget(prevTarget);
     R.setClearColor(this._c, prevAlpha);
     scene.background = prevBg;

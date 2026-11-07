@@ -7,7 +7,9 @@
 export const MAX_VEH = 16;
 export const EGO_B = { x0: -2.8, x1: 2.8, z0: -2.2, z1: 7.0 };   // scene X, Z our car's height map covers (the car is Z 0..4.775)
 export const EGO_RES = 0.01;                                      // m per pixel
-export const DEF = { x0: -26, x1: 26, z0: -130, z1: 18, w: 640, h: 1792 };   // the road map: scene X, Z, pixels
+// the road map: scene X, Z, pixels. 8 cm a pixel across the road, 16.5 cm along it: the lines run along the road, so
+// across is where they need it (the car's GPU pays for every pixel of this and the maps baked over it, every frame)
+export const DEF = { x0: -26, x1: 26, z0: -130, z1: 18, w: 640, h: 896 };
 export const LINE_H = 0.08;                                       // m: a crisp painted line over the sheet (pins)
 
 // the light most styles use: ambient, key, how hard the creases darken, specular; and where the key comes from (ahead
@@ -123,7 +125,11 @@ vec3 addGlow(vec3 c, vec3 glow) {
   float gi = max(glow.r, max(glow.g, glow.b));
   return mix(c, glow / max(gi, 1e-4), min(1.0, gi) * 0.92);
 }
-float shadowAt(vec2 p, float h) {
+// The key light's soft shadow (marched toward the light over the height field) and the creases' occlusion, at a point
+// on the surface p of height h. Each takes a few dozen reads of the height field, too many per pixel at full
+// resolution on the car's GPU, so the surface bakes both once a frame into the light map (surface.js, LIGHT_BAKE)
+// and the styles read that (shadowAt, aoAt below): they change slowly over the ground.
+float shadowMarch(vec2 p, float h) {
   vec2 d = normalize(uKey.xz);
   float tanE = uKey.y / length(uKey.xz), s = 1.0;
   for (int i = 1; i <= 8; i++) {
@@ -133,10 +139,34 @@ float shadowAt(vec2 p, float h) {
   }
   return s;
 }
-float aoAt(vec2 p, float h) {
+float aoMarch(vec2 p, float h) {
   float a = 0.0;
   for (int i = 0; i < 6; i++) { float t = float(i) * 1.0472; a += heightAt(p + vec2(cos(t), sin(t)) * 0.5) * 0.6 + heightAt(p + vec2(cos(t + 0.5), sin(t + 0.5)) * 1.1) * 0.4; }
   return clamp(1.0 - max(a / 6.0 - h, 0.0) * 2.4, 0.25, 1.0);
+}
+#ifndef LIGHT_BAKE
+uniform sampler2D tLight;   // the light map: r the key light's shadow, g the occlusion, over the road map's area
+#endif
+vec2 lightAt(vec2 p) {
+#ifdef LIGHT_BAKE
+  return vec2(1.0);         // (baking it: not read)
+#else
+  vec2 uv = defUv(p); return outside(uv) ? vec2(1.0) : textureLod(tLight, uv, 0.0).rg;
+#endif
+}
+float shadowAt(vec2 p, float h) {
+#ifdef LIGHT_BAKE
+  return shadowMarch(p, h);
+#else
+  return lightAt(p).r;
+#endif
+}
+float aoAt(vec2 p, float h) {
+#ifdef LIGHT_BAKE
+  return aoMarch(p, h);
+#else
+  return lightAt(p).g;
+#endif
 }
 vec3 lit(vec3 alb, vec3 n, vec2 p, float h, vec3 V, float sheen, bool shade) {
   float sh = 1.0, ao = 1.0;

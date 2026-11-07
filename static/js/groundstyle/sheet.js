@@ -7,16 +7,21 @@ import { DRUM, DRUM_FADE_GLSL } from '../drum.js';
 // m the sheet reaches out to either side and ahead: past where every style's fog has faded it into the background
 // (190 m from the camera at most), so its edges are never seen; over their last stretch it fades out anyway (SHEET_FS)
 const SIDE = 240, AHEAD = 280;
+// the grid: GRID m squares under and around our car (its drape's fillet is 30 cm), widening by GROW_* a row or column
+// outward: ~90k triangles (it was 4 cm and ~510k, which held the car's GPU to under 20 fps at full resolution)
+const GRID = 0.08, GROW_SIDE = 1.10, GROW_AHEAD = 1.05, GROW_BEHIND = 1.08;
 
 let grid = null;   // one, shared by every style's sheet
 function sheetGeometry() {
   const grow = (from, to, step, k) => { const a = []; let x = from, s = step; while (Math.abs(x) < Math.abs(to)) { a.push(x); x += Math.sign(to - from) * s; s *= k; } a.push(to); return a; };
+  // GRID m squares around our car, each row and column out from it wider by a few percent: on the car's GPU (a Mali)
+  // every triangle costs, and rows far ahead a pixel apart would shade each pixel several times over (its 2x2 quads)
   const dense = [];
-  for (let x = -2.4; x <= 2.4 + 1e-6; x += 0.04) dense.push(+x.toFixed(3));
-  const xs = [...grow(-2.4, -SIDE, 0.04, 1.045).slice(1).reverse(), ...dense, ...grow(2.4, SIDE, 0.04, 1.045).slice(1)];
+  for (let x = -2.4; x <= 2.4 + 1e-6; x += GRID) dense.push(+x.toFixed(3));
+  const xs = [...grow(-2.4, -SIDE, GRID, GROW_SIDE).slice(1).reverse(), ...dense, ...grow(2.4, SIDE, GRID, GROW_SIDE).slice(1)];
   const zd = [];
-  for (let z = -1.6; z <= 6.6 + 1e-6; z += 0.04) zd.push(+z.toFixed(3));
-  const zs = [...grow(-1.6, -AHEAD, 0.04, 1.011).slice(1).reverse(), ...zd, ...grow(6.6, 40, 0.04, 1.05).slice(1)];
+  for (let z = -1.6; z <= 6.6 + 1e-6; z += GRID) zd.push(+z.toFixed(3));
+  const zs = [...grow(-1.6, -AHEAD, GRID, GROW_AHEAD).slice(1).reverse(), ...zd, ...grow(6.6, 40, GRID, GROW_BEHIND).slice(1)];
   const pos = new Float32Array(xs.length * zs.length * 3);
   let k = 0;
   for (const z of zs) for (const x of xs) { pos[k++] = x; pos[k++] = 0; pos[k++] = z; }
