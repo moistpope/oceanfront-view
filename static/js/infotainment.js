@@ -7,7 +7,6 @@
 // browser there's no app and both cards stay hidden. Settings > Display > Debug has a demo of both.
 import { $, el, iconSvg, setClass, setText } from './util.js';
 import { iconManeuverFromUrl } from './navicon.js';
-import * as THREE from '../vendor/three.module.min.js';
 
 const UNIT_M = { mi: 1609.344, mile: 1609.344, miles: 1609.344, ft: 0.3048, feet: 0.3048, foot: 0.3048, yd: 0.9144, yds: 0.9144, yard: 0.9144,
   yards: 0.9144, km: 1000, m: 1, meter: 1, meters: 1 };
@@ -225,7 +224,7 @@ export class Infotainment {
     this.tfDist = el('div.tf-dist');
     this.turnFloat = el('div.turnfloat.hidden', { 'aria-label': 'Next turn' }, this.tfIcon, el('div.tf-bar', this.tfFill), this.tfWhat, this.tfDist);
     $('#app').append(this.turnFloat);
-    this.tf = { step: null, start: 0, p: new THREE.Vector3() };
+    this.tf = { step: null, start: 0, p: null };   // p: a scratch Vector3, cloned from the camera's (keeps three.js out of this module, which the tests load)
   }
 
   setNav(raw) {
@@ -291,7 +290,7 @@ export class Infotainment {
     // low over the ground beside the car, clear of the road ahead, the cars on it and the route: 7 m ahead, 6 m to the
     // passenger's side (the right, or the left with the driver on the right: html.rhd), 0.4 m up (scene X = -y, Y up, Z = -x)
     const side = root.classList.contains('rhd') ? -1 : 1;
-    const v = this.tf.p.set(6 * side, 0.4, -7).project(scene.camera);
+    const v = (this.tf.p ||= scene.camera.position.clone()).set(6 * side, 0.4, -7).project(scene.camera);
     const W = window.innerWidth, H = window.innerHeight;
     // kept in the screen and above what's along the bottom (the music, replay bar and controls: layout's --bottom-h)
     const lo = Math.min(120, W / 2), top = 60, bottom = Math.max(top, H - (this._bottomH || 0) - 70);
