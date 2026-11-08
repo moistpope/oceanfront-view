@@ -587,10 +587,13 @@ export class WorldModel {
         const overlaps = forced.has(`${a}:${b}`);
         let keep, drop;
         if (same) {
-          // one object split in two (its measurement jumped out of its own track's gate): keep the copy the
-          // source fed last, which is where the object is now
+          // one object split in two (its measurement jumped out of its own track's gate): the copy the source fed
+          // last is where the object is now, so its estimate goes on, under the id the view already shows
           if (hypot(d[0], d[1]) > SAME_ID_M) continue;
-          [keep, drop] = A.lastT >= B.lastT ? [A, B] : [B, A];
+          [keep, drop] = older(A, B);
+          const fresh = A.lastT >= B.lastT ? A : B;
+          // (a correction, not motion: what's drawn is put there too, rather than driving over)
+          if (fresh !== keep) { keep.f = fresh.f; keep.t = fresh.t; keep.body = null; }
         } else if (overlaps) {
           [keep, drop] = older(A, B);
         } else {
@@ -638,16 +641,14 @@ export class WorldModel {
     const pose = this.odo.pose(t);
     const back = FRONT_TO_REAR_AXLE - EGO_L / 2;   // our footprint's center, ahead of the rear axle
     const ego = [pose[0] + back * Math.cos(pose[2]), pose[1] + back * Math.sin(pose[2]), EGO_W, EGO_L, pose[2]];
-    // two tracks are surely two objects only when a camera has told them apart: the ADAS list, or openpilot's two
-    // leads, each seeing one of them now. Otherwise overlapping tracks are one object the radar split in two
+    // two tracks are surely two objects only when the ADAS camera list has told them apart, seeing each under its
+    // own id now (openpilot's two leads don't: its second is most often the first again). Otherwise overlapping
+    // tracks are one object seen twice
     const seenAs = (tr, src) => (tr.sources[src] && t - tr.sources[src].t < 0.5 ? tr.sources[src].id : null);
     const distinct = (a, b) => {
       const A = this.tracks.get(a), B = this.tracks.get(b);
-      for (const src of ['adas', 'op']) {
-        const ia = seenAs(A, src), ib = seenAs(B, src);
-        if (ia !== null && ib !== null && ia !== ib) return true;
-      }
-      return false;
+      const ia = seenAs(A, 'adas'), ib = seenAs(B, 'adas');
+      return ia !== null && ib !== null && ia !== ib;
     };
     const same = separate([...this.tracks.values()].map(tr => ({ f: tr.f, id: tr.id })), ego, 3, distinct);
     if (same.length) this._merge(same);
