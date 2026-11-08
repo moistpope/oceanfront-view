@@ -5,7 +5,9 @@ import { BASE_LIGHT, STYLE_GLSL } from '../glsl.js';
 import { SHEET_FS } from '../sheet.js';
 import { DRUM_FADE_GLSL } from '../../drum.js';
 
-const PINS = [{ s: 0.2, r: 22, ahead: 12 }, { s: 0.4, r: 64, ahead: 40 }];   // pitch (m), reach (m), centered this far ahead
+// pitch (m), reach (m), centered this far ahead: the coarse pins reach a little past where they've faded into the fog
+// (PIN_VS: 45-100 m from the camera) and no farther, ~70k pins in all (they were ~140k, 1.4M triangles a frame)
+const PINS = [{ s: 0.2, r: 16, ahead: 9 }, { s: 0.4, r: 44, ahead: 36 }];
 const SWAP = [16, 22];   // m from the car over which the fine pins hand over to the coarse
 const FILL = 0.82;       // of the pitch a pin's top covers
 const DROP = 0.12;       // m the floor sits under the pins
@@ -17,6 +19,7 @@ ${DRUM_FADE_GLSL}
 attribute vec3 aCell;           // ground-fixed position (in the lattice's frame) and level (0 fine, 1 coarse)
 uniform vec2 uSwap;
 uniform float uS0, uS1, uFill;
+uniform float uReach;           // the coarse lattice's reach (m from its center): its pins fade out over the last fifth
 uniform vec3 uPin;
 varying vec3 vColor;
 void main() {
@@ -42,8 +45,9 @@ void main() {
   vec3 glow = d.rgb * 0.5 + (lineHalo(c) * 0.5 + lineBloom(c) * 0.3) * (1.0 - carCover(c));
   if (normal.y > 0.5) vColor = addGlow(lit(alb, vec3(0.0, 1.0, 0.0), c, h, V, 0.0, true) + uTail * (tailAt(c) + egoBar(c)) * 1.1, glow);
   else vColor = addGlow(lit(alb, normal, c, h, V, uSheen, false) * mix(0.25, 0.85, position.y), glow * 0.5 * position.y);
-  // the pins end well inside the fog, and fade out toward the drum's horizon (drum.js)
-  vColor = mix(vColor, uBg, max(smoothstep(45.0, 100.0, length(w - cameraPosition)), drumFade(w)));
+  // the pins end well inside the fog, and fade out toward the drum's horizon (drum.js) and their lattice's edge
+  float edge = level > 0.5 ? smoothstep(uReach * 0.8, uReach, max(abs(aCell.x), abs(aCell.z))) : 0.0;
+  vColor = mix(vColor, uBg, max(max(smoothstep(45.0, 100.0, length(w - cameraPosition)), drumFade(w)), edge));
 }`;
 const PIN_FS = `
 varying vec3 vColor;
@@ -106,7 +110,7 @@ export default {
     const mat = new THREE.ShaderMaterial({
       vertexShader: PIN_VS, fragmentShader: PIN_FS, side: THREE.DoubleSide,
       uniforms: Object.assign({
-        uSwap: { value: new THREE.Vector2(...SWAP) }, uS0: { value: PINS[0].s }, uS1: { value: PINS[1].s }, uFill: { value: FILL },
+        uSwap: { value: new THREE.Vector2(...SWAP) }, uS0: { value: PINS[0].s }, uS1: { value: PINS[1].s }, uFill: { value: FILL }, uReach: { value: PINS[1].r },
         uPin: { value: new THREE.Color() },
       }, kit.uniforms),
     });

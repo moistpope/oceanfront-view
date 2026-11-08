@@ -37,6 +37,16 @@ export function setText(node, text) {
   if (node && node.textContent !== text) node.textContent = text;
 }
 
+// The HUD updates every frame; on the car's WebView every write to the page (even of the same class or value) restyles
+// and repaints the layers over the 3D view, so these write only what changed.
+export function setClassName(node, cls) { if (node && node.className !== cls) node.className = cls; }
+export function setTitle(node, title) { if (node && node.title !== title) node.title = title; }
+export function setStyleVar(node, name, value) {
+  if (!node) return;
+  const k = '__' + name;
+  if (node[k] !== value) { node[k] = value; node.style.setProperty(name, value); }
+}
+
 export function fmtTime(s) {
   if (!isFinite(s)) return '0:00';
   s = Math.max(0, Math.floor(s));

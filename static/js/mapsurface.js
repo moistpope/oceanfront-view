@@ -255,6 +255,9 @@ export function mapReference(map, pose, road, settings, rearAxleZ = REAR_AXLE_TO
     ourLeft: leftTr ? half : -half + split.ours * W, ourRight: leftTr ? half - split.ours * W : -half,   // our carriageway's bounds, m left of the reference line
     branches, structure,
     lanes, oneWay: !!way.oneWay, split, turns: lay.turns || null,
+    // the lines between its lanes are painted (as the network draws them, mapsurface roadNetwork): not on a single-track
+    // road, nor one OSM says has no lane markings; the edges are drawn either way
+    painted: way.markings !== false && !way.singleTrack,
   };
 }
 

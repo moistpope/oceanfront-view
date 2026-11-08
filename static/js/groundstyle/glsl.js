@@ -7,7 +7,11 @@
 export const MAX_VEH = 16;
 export const EGO_B = { x0: -2.8, x1: 2.8, z0: -2.2, z1: 7.0 };   // scene X, Z our car's height map covers (the car is Z 0..4.775)
 export const EGO_RES = 0.01;                                      // m per pixel
-export const DEF = { x0: -26, x1: 26, z0: -130, z1: 18, w: 640, h: 1792 };   // the road map: scene X, Z, pixels
+// The road map, and every map baked over it (height, light, the cars), seen in perspective from a camera `height` m up
+// and `back` m behind our car, from `near` m behind it to `far` ahead (scene Z), `side` m either side at the car: fine
+// where it's seen closely (7-8 cm a texel at the car) and coarser with distance as the view itself is (~1 m along, 35
+// cm across, 100 m ahead), so it reaches as far as the view does for the pixels a flat map would spend on 130 m.
+export const DEF = { w: 640, h: 896, height: 20, back: 30, near: 18, far: -300, side: 26 };
 export const LINE_H = 0.08;                                       // m: a crisp painted line over the sheet (pins)
 
 // the light most styles use: ambient, key, how hard the creases darken, specular; and where the key comes from (ahead
@@ -24,14 +28,49 @@ uniform float uDrape;          // m over which a car rises out of the ground
 uniform sampler2D tEgo;        // our car from above: r draped, g exact, b glass
 uniform float uEgoOn, uEgoSharp;
 uniform sampler2D tDef;        // the road from above: rgb its lines' colors, a where there is road
-uniform vec4 uDefB;
+uniform mat4 uDefInv;           // the inverse of the road map's camera (DEF)
+uniform vec3 uDefU, uDefV, uDefW;   // its camera on the ground plane: uv = (U, V) . (x, z, 1) / W . (x, z, 1)
 uniform float uLineH;
 uniform mat4 uWorldInv;   // scene -> ground-fixed (scene.js world) coordinates
 const vec4 EGO_B = vec4(${EGO_B.x0}, ${EGO_B.x1}, ${EGO_B.z0}, ${EGO_B.z1});
 float sdBox(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 vec2 vehLocal(int i, vec2 p) { vec2 d = p - uVeh[i].xy; vec4 b = uVehB[i]; return vec2(d.x * b.x - d.y * b.y, d.x * b.y + d.y * b.x); }
+// whether p is within m of car i at all (a circle round its box): the bakes skip the far cars' exact distance
+bool vehNear(int i, vec2 p, float m) { vec2 d = p - uVeh[i].xy; float R = uVeh[i].z + uVeh[i].w + m; return dot(d, d) < R * R; }
 float vehD(int i, vec2 p) { return sdBox(vehLocal(i, p), uVeh[i].zw, min(0.5, uVeh[i].z * 0.6)); }
-vec2 defUv(vec2 p) { return vec2((p.x - uDefB.x) / (uDefB.y - uDefB.x), (uDefB.w - p.y) / (uDefB.w - uDefB.z)); }
+// (most of a pixel's reads are at one ground point, so the last one is kept: the projection is a divide and nine
+// multiply-adds, and the styles read the maps there a dozen times)
+vec2 gDefP = vec2(1e9), gDefUv;
+vec2 defUv(vec2 p) {
+  if (p == gDefP) return gDefUv;
+  vec3 q = vec3(p, 1.0);
+  float w = dot(uDefW, q);
+  gDefP = p;
+  gDefUv = w > 0.0 ? vec2(dot(uDefU, q), dot(uDefV, q)) / w : vec2(-1.0);
+  return gDefUv;
+}
+// The road map and what's made from it (its lines' coverage, glow and bloom) are fixed to the ground, so the surface
+// renders them only every other frame (ROAD_EVERY, surface.js): in between, a point is looked up where it was when they
+// were rendered, through the car's motion since (uRoadX, uRoadZ: the scene then, from the scene now, on the ground).
+uniform vec3 uRoadX, uRoadZ;
+vec2 gRoadP = vec2(1e9), gRoadUv;
+vec2 roadUv(vec2 p) {
+  if (p == gRoadP) return gRoadUv;
+  vec3 q = vec3(p, 1.0);
+  vec2 then = vec2(dot(uRoadX, q), dot(uRoadZ, q));
+  vec3 r = vec3(then, 1.0);
+  float w = dot(uDefW, r);
+  gRoadP = p;
+  gRoadUv = w > 0.0 ? vec2(dot(uDefU, r), dot(uDefV, r)) / w : vec2(-1.0);
+  return gRoadUv;
+}
+// the ground point (scene X, Z) a texel of the road map shows: its ray from the camera, to the ground
+vec2 defGround(vec2 uv) {
+  vec2 n = uv * 2.0 - 1.0;
+  vec4 a = uDefInv * vec4(n, -1.0, 1.0), b = uDefInv * vec4(n, 1.0, 1.0);
+  a /= a.w; b /= b.w;
+  return mix(a.xz, b.xz, a.y / (a.y - b.y));
+}
 bool outside(vec2 uv) { return uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0; }
 vec4 egoTex(vec2 p) {
   vec2 uv = vec2((p.x - EGO_B.x) / (EGO_B.y - EGO_B.x), (EGO_B.w - p.y) / (EGO_B.w - EGO_B.z));
@@ -39,9 +78,9 @@ vec4 egoTex(vec2 p) {
   return textureLod(tEgo, uv, 0.0);
 }
 float egoH(vec2 p) { vec4 e = egoTex(p); return mix(e.r, e.g, uEgoSharp); }
-vec4 defAt(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec4(0.0) : textureLod(tDef, uv, 0.0); }
+vec4 defAt(vec2 p) { vec2 uv = roadUv(p); return outside(uv) ? vec4(0.0) : textureLod(tDef, uv, 0.0); }
 // the road map blurred (its mipmaps): a soft spread of the lines' colors around them
-vec3 defBlur(vec2 p, float lod) { vec2 uv = defUv(p); return outside(uv) ? vec3(0.0) : textureLod(tDef, uv, lod).rgb; }
+vec3 defBlur(vec2 p, float lod) { vec2 uv = roadUv(p); return outside(uv) ? vec3(0.0) : textureLod(tDef, uv, lod).rgb; }
 // how much of a line's paint is here: its color's strength in the style's line colors (surface.js CONCEPT_LINES) and
 // how much of the texel the line covers; and its hue
 float paintOf(vec4 d) { return min(1.0, max(d.r, max(d.g, d.b))); }
@@ -58,27 +97,23 @@ vec3 lineColor(vec4 d) { float m = max(d.r, max(d.g, d.b)); return m > 0.0 ? d.r
 uniform sampler2D tHeight;
 vec4 hTex(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec4(0.0) : textureLod(tHeight, uv, 0.0); }
 float heightAt(vec2 p) { float f = hTex(p).r, e = egoH(p); return e > 0.0 ? onTop(f, e) : f; }
-// a smoother normal for a big shaded sheet: the baked field's slope over a few of its texels (so its 10 cm steps
-// don't show in the light), our car's over its own finer map where it's on top
-vec3 heightNormalWide(vec2 p) {
-  float e = 0.15, f = 0.04;
-  vec2 g = vec2(hTex(p + vec2(e, 0.0)).r - hTex(p - vec2(e, 0.0)).r, hTex(p + vec2(0.0, e)).r - hTex(p - vec2(0.0, e)).r) / (2.0 * e);
-  float eh = egoH(p);
-  if (eh > 0.0) {
-    vec2 ge = vec2(egoH(p + vec2(f, 0.0)) - egoH(p - vec2(f, 0.0)), egoH(p + vec2(0.0, f)) - egoH(p - vec2(0.0, f))) / (2.0 * f);
-    g = mix(g, ge, smoothstep(0.0, 0.1, eh) * smoothstep(-0.02, 0.02, eh - hTex(p).r));
-  }
-  return normalize(vec3(-g.x, 1.0, -g.y));
+// the field's slope over 30 cm (four reads of the height field), which the surface bakes into the light map once a frame
+// (LIGHT_BAKE) for the styles to read in one (fieldSlope)
+vec2 fieldSlopeMarch(vec2 p) {
+  float e = 0.15;
+  return vec2(hTex(p + vec2(e, 0.0)).r - hTex(p - vec2(e, 0.0)).r, hTex(p + vec2(0.0, e)).r - hTex(p - vec2(0.0, e)).r) / (2.0 * e);
 }
 vec3 heightNormal(vec2 p) {
   float e = 0.06;
   return normalize(vec3(heightAt(p - vec2(e, 0.0)) - heightAt(p + vec2(e, 0.0)), 2.0 * e, heightAt(p - vec2(0.0, e)) - heightAt(p + vec2(0.0, e))));
 }
 // the cars' paint over their footprints: rgb, and how much of a car is here
-vec4 vehPaint(vec2 p) {
+// (each loops over every car: the surface bakes both once a frame, CAR_BAKE, and the styles read the bakes)
+vec4 vehPaintLoop(vec2 p) {
   vec3 c = vec3(0.0); float m = 0.0;
   for (int i = 0; i < MAX_VEH; i++) {
     if (i >= uNVeh) break;
+    if (!vehNear(i, p, 0.3)) continue;
     float w = smoothstep(0.3, -0.2, vehD(i, p)) * abs(uVehB[i].w);
     c += uVehC[i] * w; m += w;
   }
@@ -87,23 +122,42 @@ vec4 vehPaint(vec2 p) {
 // ...only the cars painted for a reason (the one we follow, a threat), spread softly over their skirts: a car otherwise
 // is the cloth itself, the same color as the road around it
 uniform float uVehP[MAX_VEH];   // 1 painted
-vec4 vehTint(vec2 p) {
+vec4 vehTintLoop(vec2 p) {
   vec3 c = vec3(0.0); float m = 0.0;
   for (int i = 0; i < MAX_VEH; i++) {
     if (i >= uNVeh) break;
+    if (uVehP[i] < 0.5 || !vehNear(i, p, 0.9)) continue;
     float w = smoothstep(0.9, -0.6, vehD(i, p)) * abs(uVehB[i].w) * uVehP[i];
     c += uVehC[i] * w; m += w;
   }
   return m > 0.0 ? vec4(c / m, min(m, 1.0)) : vec4(0.0);
 }
+#ifndef CAR_BAKE
+uniform sampler2D tCarPaint, tCarTint;   // vehPaintLoop and vehTintLoop, baked over the road map's area
+#endif
+vec4 carMap(sampler2D t, vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec4(0.0) : textureLod(t, uv, 0.0); }
+vec4 vehPaint(vec2 p) {
+#ifdef CAR_BAKE
+  return vehPaintLoop(p);
+#else
+  return carMap(tCarPaint, p);
+#endif
+}
+vec4 vehTint(vec2 p) {
+#ifdef CAR_BAKE
+  return vehTintLoop(p);
+#else
+  return carMap(tCarTint, p);
+#endif
+}
 float tailAt(vec2 p) { return hTex(p).g; }
 // the lines' light spread about 30 cm around them, in their colors at their strengths (surface.js, for a profile with
 // a halo): about a line's own color along it, falling away to either side
 uniform sampler2D tGlow;
-vec3 lineHalo(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec3(0.0) : textureLod(tGlow, uv, 0.0).rgb * 5.0; }
+vec3 lineHalo(vec2 p) { vec2 uv = roadUv(p); return outside(uv) ? vec3(0.0) : textureLod(tGlow, uv, 0.0).rgb * 5.0; }
 // ...and their bloom, spread about a metre around them
 uniform sampler2D tBloom;
-vec3 lineBloom(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec3(0.0) : textureLod(tBloom, uv, 0.0).rgb * 16.0; }
+vec3 lineBloom(vec2 p) { vec2 uv = roadUv(p); return outside(uv) ? vec3(0.0) : textureLod(tBloom, uv, 0.0).rgb * 16.0; }
 // how much a car (ours or another) covers the surface here, and the road map with the lines' paint left off the cars
 float carCover(vec2 p) { return smoothstep(0.02, 0.12, hTex(p).b + heightAt(p) - hTex(p).r); }
 vec4 paintAt(vec2 p) { vec4 d = defAt(p); d.rgb *= 1.0 - carCover(p); return d; }
@@ -123,7 +177,11 @@ vec3 addGlow(vec3 c, vec3 glow) {
   float gi = max(glow.r, max(glow.g, glow.b));
   return mix(c, glow / max(gi, 1e-4), min(1.0, gi) * 0.92);
 }
-float shadowAt(vec2 p, float h) {
+// The key light's soft shadow (marched toward the light over the height field) and the creases' occlusion, at a point
+// on the surface p of height h. Each takes a few dozen reads of the height field, too many per pixel at full
+// resolution on the car's GPU, so the surface bakes both once a frame into the light map (surface.js, LIGHT_BAKE)
+// and the styles read that (shadowAt, aoAt below): they change slowly over the ground.
+float shadowMarch(vec2 p, float h) {
   vec2 d = normalize(uKey.xz);
   float tanE = uKey.y / length(uKey.xz), s = 1.0;
   for (int i = 1; i <= 8; i++) {
@@ -133,10 +191,55 @@ float shadowAt(vec2 p, float h) {
   }
   return s;
 }
-float aoAt(vec2 p, float h) {
+float aoMarch(vec2 p, float h) {
   float a = 0.0;
-  for (int i = 0; i < 6; i++) { float t = float(i) * 1.0472; a += heightAt(p + vec2(cos(t), sin(t)) * 0.5) * 0.6 + heightAt(p + vec2(cos(t + 0.5), sin(t + 0.5)) * 1.1) * 0.4; }
+  // one ring of six at 0.75 m, between the two rings (0.5 and 1.1 m) it once took: the creases it darkens are broad
+  for (int i = 0; i < 6; i++) { float t = float(i) * 1.0472 + 0.25; a += heightAt(p + vec2(cos(t), sin(t)) * 0.75); }
   return clamp(1.0 - max(a / 6.0 - h, 0.0) * 2.4, 0.25, 1.0);
+}
+#ifndef LIGHT_BAKE
+uniform sampler2D tLight;   // the light map: r the key light's shadow, g the occlusion, over the road map's area
+#endif
+vec4 lightMap(vec2 p) {
+#ifdef LIGHT_BAKE
+  return vec4(1.0, 1.0, 0.0, 0.0);   // (baking it: not read)
+#else
+  vec2 uv = defUv(p); return outside(uv) ? vec4(1.0, 1.0, 0.0, 0.0) : textureLod(tLight, uv, 0.0);
+#endif
+}
+vec2 lightAt(vec2 p) { return lightMap(p).rg; }
+vec2 fieldSlope(vec2 p) {
+#ifdef LIGHT_BAKE
+  return fieldSlopeMarch(p);
+#else
+  return lightMap(p).ba;
+#endif
+}
+// a smoother normal for a big shaded sheet: the field's slope (baked), our car's over its own finer map where it's on top
+vec3 heightNormalWide(vec2 p) {
+  float f = 0.04;
+  vec2 g = fieldSlope(p);
+  float eh = egoH(p);
+  if (eh > 0.0) {
+    vec2 ge = vec2(egoH(p + vec2(f, 0.0)) - egoH(p - vec2(f, 0.0)), egoH(p + vec2(0.0, f)) - egoH(p - vec2(0.0, f))) / (2.0 * f);
+    g = mix(g, ge, smoothstep(0.0, 0.1, eh) * smoothstep(-0.02, 0.02, eh - hTex(p).r));
+  }
+  return normalize(vec3(-g.x, 1.0, -g.y));
+}
+
+float shadowAt(vec2 p, float h) {
+#ifdef LIGHT_BAKE
+  return shadowMarch(p, h);
+#else
+  return lightAt(p).r;
+#endif
+}
+float aoAt(vec2 p, float h) {
+#ifdef LIGHT_BAKE
+  return aoMarch(p, h);
+#else
+  return lightAt(p).g;
+#endif
 }
 vec3 lit(vec3 alb, vec3 n, vec2 p, float h, vec3 V, float sheen, bool shade) {
   float sh = 1.0, ao = 1.0;

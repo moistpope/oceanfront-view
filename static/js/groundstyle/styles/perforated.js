@@ -9,7 +9,63 @@ import * as THREE from '../../../vendor/three.module.min.js';
 import { SHEET_FS } from '../sheet.js';
 
 const CELL = 0.085, HOLE_R = 0.3;   // the perforations' pitch (m) and radius (in pitches)
-const FOG = [60, 170];              // m from the camera: the sheet fades into the horizon
+const HOLE_TEXTURE = true;          // the holes from a mipmapped texture (holeTexture) rather than worked out per pixel
+const HOLE_TILE = 4, HOLE_PX = 64;  // holes a side in the texture's tile, and its texels a hole
+const BUMP = 0;                     // how strongly the cloth's weave and the holes' lips tilt its light (0: off, no cost).
+                                    // A prototype: at the distance the view sees the cloth from, the holes are ~6 px apart
+                                    // and the weave below a pixel, so it reads as a faint sheen that dulls the holes
+const THREADS = 3;                  // weave bumps a hole's pitch
+
+/** One tile of the holes: HOLE_TILE x HOLE_TILE of them, white in black, anti-aliased (4 x 4 samples a texel), mipmapped
+ *  and repeating, filtered anisotropically so they stay sharp along the road. */
+function holeTexture() {
+  const N = HOLE_TILE * HOLE_PX, data = new Uint8Array(N * N * 4), R = HOLE_R * HOLE_PX;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let c = 0;
+    for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
+      const fx = ((x + (sx + 0.5) / 4) % HOLE_PX) - HOLE_PX / 2, fy = ((y + (sy + 0.5) / 4) % HOLE_PX) - HOLE_PX / 2;
+      if (fx * fx + fy * fy < R * R) c++;
+    }
+    const v = Math.round(255 * c / 16), i = (y * N + x) * 4;
+    data[i] = data[i + 1] = data[i + 2] = v; data[i + 3] = 255;
+  }
+  return tileTexture(data, N);
+}
+
+/** The cloth's relief over the same tile: a fine weave (THREADS bumps a pitch each way) and a raised lip round each hole,
+ *  the hole itself sunk; as a normal map (rg: its slope each way, 0.5 flat), mipmapped like the holes so it flattens with
+ *  distance instead of shimmering. */
+function bumpTexture() {
+  const N = HOLE_TILE * HOLE_PX, R = HOLE_R * HOLE_PX, H = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const fx = (x % HOLE_PX) - HOLE_PX / 2, fy = (y % HOLE_PX) - HOLE_PX / 2, r = Math.hypot(fx, fy);
+    const P = HOLE_PX / THREADS;
+    let h = 0.35 * Math.sin(2 * Math.PI * x / P) * Math.sin(2 * Math.PI * y / P);   // the weave
+    h += 0.9 * Math.exp(-(((r - R - 2.5) / 3) ** 2));                                // the lip, just outside the hole
+    if (r < R) h -= 0.6 * (1 - r / R);                                               // the hole, sunk
+    H[y * N + x] = h;
+  }
+  const data = new Uint8Array(N * N * 4), at = (x, y) => H[((y + N) % N) * N + ((x + N) % N)];
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const gx = (at(x + 1, y) - at(x - 1, y)) / 2, gy = (at(x, y + 1) - at(x, y - 1)) / 2, i = (y * N + x) * 4;
+    data[i] = Math.round(255 * Math.min(1, Math.max(0, 0.5 - gx * 0.5)));
+    data[i + 1] = Math.round(255 * Math.min(1, Math.max(0, 0.5 - gy * 0.5)));
+    data[i + 2] = 255; data[i + 3] = 255;
+  }
+  return tileTexture(data, N);
+}
+
+function tileTexture(data, N) {
+  const t = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.anisotropy = 8;
+  t.needsUpdate = true;
+  return t;
+}
+const FOG = [80, 260];              // m from the camera: the sheet fades into the horizon (the road map reaches 300 m)
 // the bar's colors by the time gap to the car we follow (s): green with a long gap, through yellow and orange, red close
 const GAP_COLORS = [[2.2, 0x3ddc6a], [1.5, 0xffd23a], [1.0, 0xff8a1f], [0, 0xff3b30]].map(([s, c]) => [s, new THREE.Color(c)]);
 // the gap bar behind the car we follow: from BAR[0] to BAR[1] m off its back bumper, as wide as the car
@@ -38,13 +94,60 @@ float holeAt(vec2 gc, out vec2 off, out float raw, out float vis) {
   vis = smoothstep(3.0, 6.5, cellPx);
   return mix(3.14159 * uHoleR * uHoleR, raw, vis);
 }
+// the holes seen from above, as a texture's mipmaps would be: where they're under a few pixels apart, the pattern at
+// twice the pitch (and again, up to HOLE_LODS times), blended between levels, so the cloth still reads as perforated far
+// off and at a reduced render scale rather than turning smooth a few metres ahead. The derivatives are taken once here
+// (gc / 2^k's are gc's / 2^k), before anything branches.
+const float HOLE_LODS = 4.0;
+float holeLevel(vec2 gc, float k, float fw, out vec2 off, out float raw) {
+  float sc = exp2(k);
+  vec2 g = gc / sc, f = fract(g) - 0.5; off = f;
+  float dd = length(f), aa = fw / sc * 0.8 + 1e-4;
+  raw = 1.0 - smoothstep(uHoleR - aa, uHoleR + aa, dd);
+  return raw;
+}
+float holeTop(vec2 gc, out vec2 off, out float raw, out float vis) {
+  float fw = max(max(fwidth(gc.x), fwidth(gc.y)), 1e-5);
+  float k = clamp(log2(6.0 * fw), 0.0, HOLE_LODS), k0 = floor(k), t = smoothstep(0.6, 1.0, k - k0);
+  vec2 oa, ob; float ra, rb;
+  holeLevel(gc, k0, fw, oa, ra);
+  holeLevel(gc, k0 + 1.0, fw, ob, rb);
+  off = t < 0.5 ? oa : ob;
+  // the coarser levels lighter: far off the holes are a texture, not the near ones' bold pattern
+  raw = mix(ra, rb, t) * (1.0 - 0.14 * k);
+  // past the coarsest level, their average
+  vis = smoothstep(3.0, 6.5, exp2(HOLE_LODS) / fw);
+  return mix(3.14159 * uHoleR * uHoleR, raw, vis);
+}
+#ifdef HOLE_TEXTURE
+// the holes as a texture (holeTexture): HOLE_TILE x HOLE_TILE of them a tile, its mipmaps (and the GPU's anisotropic
+// filtering) doing the anti-aliasing and the fade into an even tone with distance
+uniform sampler2D tHoles;
+#ifdef BUMP_MAP
+uniform sampler2D tBump;
+uniform float uBump;
+// the cloth's relief (bumpTexture) seen from above: n tilted along the ground-fixed axes the holes are laid out on
+vec3 bumped(vec3 n, vec2 gc, float top) {
+  vec2 d = (texture(tBump, gc / ${HOLE_TILE.toFixed(1)}, -0.6).rg * 2.0 - 1.0) * uBump * top;
+  mat3 m = mat3(uWorldInv);
+  vec3 T = vec3(m[0][0], m[1][0], m[2][0]), B = vec3(m[0][2], m[1][2], m[2][2]);   // the ground's x and z axes, in the scene
+  return normalize(n + T * d.x + B * d.y);
+}
+#endif
+float holeTex(vec2 gc) { return texture(tHoles, gc / ${HOLE_TILE.toFixed(1)}, -0.6).r; }   // (a sharper mip: they hold further out)
+#endif
 void main() {
   vec2 p = vPos.xz;
   float h = vPos.y + uDrop + 0.01;
   // the holes first (their anti-aliasing takes derivatives, so before anything branches): seen from above and from
   // both ground-fixed sides
+#ifdef HOLE_TEXTURE
+  vec2 o0 = fract(vWorld / uCell) - 0.5;
+  float hT = holeTex(vWorld / uCell), hA = holeTex(vec2(vWorld.y, vPos.y) / uCell), hB = holeTex(vec2(vWorld.x, vPos.y) / uCell);
+#else
   vec2 o0, o1, o2; float r0, r1, r2, v0, v1, v2;
-  float hT = holeAt(vWorld / uCell, o0, r0, v0), hA = holeAt(vec2(vWorld.y, vPos.y) / uCell, o1, r1, v1), hB = holeAt(vec2(vWorld.x, vPos.y) / uCell, o2, r2, v2);
+  float hT = holeTop(vWorld / uCell, o0, r0, v0), hA = holeAt(vec2(vWorld.y, vPos.y) / uCell, o1, r1, v1), hB = holeAt(vec2(vWorld.x, vPos.y) / uCell, o2, r2, v2);
+#endif
   bool up = h > 0.004;
   vec3 n = up ? heightNormalWide(p) : vec3(0.0, 1.0, 0.0);
   vec3 V = normalize(cameraPosition - vPos);
@@ -53,8 +156,15 @@ void main() {
   vec3 nw = normalize(mat3(uWorldInv) * n);
   vec3 bw = pow(abs(nw), vec3(4.0)); bw /= bw.x + bw.y + bw.z;
   float holes = hA * bw.x + hT * bw.y + hB * bw.z;
+#ifdef BUMP_MAP
+  n = bumped(n, vWorld / uCell, bw.y);
+#endif
   // how much of the light under the cloth gets out here: through a hole, or (holes too small to see) about half
+#ifdef HOLE_TEXTURE
+  float through = mix(0.12, 1.0, holes);   // (far off, the holes' average: about 0.37)
+#else
   float through = mix(0.45, r1 * bw.x + r0 * bw.y + r2 * bw.z, v1 * bw.x + v0 * bw.y + v2 * bw.z);
+#endif
 
   // the cloth: the key light with its shadows, creases darker, a sheen where it faces the light; the holes darker
   vec3 alb = mix(uBase, vp.rgb, vp.a * 0.35) * (1.0 - e.b * 0.4);
@@ -112,7 +222,10 @@ export default {
     const sheet = kit.add(kit.sheet(SHEET, {
       uBase: { value: new THREE.Color() }, uHole: { value: new THREE.Color() }, uHoleR: { value: HOLE_R }, uCell: { value: CELL },
       uLead: { value: new THREE.Vector4() }, uBar: { value: new THREE.Vector4(0, -1, 1, 0.15) }, uLeadC: { value: new THREE.Color() }, uToUs: { value: new THREE.Vector2(0, 1) },
+      ...(HOLE_TEXTURE ? { tHoles: { value: holeTexture() } } : {}),
+      ...(HOLE_TEXTURE && BUMP > 0 ? { tBump: { value: bumpTexture() }, uBump: { value: BUMP } } : {}),
     }));
+    if (HOLE_TEXTURE) { sheet.material.defines = { ...(sheet.material.defines || {}), HOLE_TEXTURE: 1, ...(BUMP > 0 ? { BUMP_MAP: 1 } : {}) }; sheet.material.needsUpdate = true; }
     const u = sheet.material.uniforms, snap = CELL * 512;
     const bar = { s: 0, phase: 0, on: false, color: GAP_COLORS[0][1].clone() };
     return {
