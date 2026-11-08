@@ -1,6 +1,6 @@
 import { cameraSignUnit, cameraSignValue, signStyle, leftTraffic } from './regional.js';
 // DOM overlay: speed, gear, steering assist (MADS), ACC set speed + gap, speed limit, telltales, alerts.
-import { $, $$, el, icon, iconSvg, setClass, setText, prettyLabel, MS_TO_KPH, MS_TO_MPH } from './util.js';
+import { $, $$, el, icon, iconSvg, setClass, setText, setClassName, setStyleVar, prettyLabel, MS_TO_KPH, MS_TO_MPH } from './util.js';
 import { EnergyDetails } from './energy.js';
 
 const BELT_HOLD_S = 1.5;   // s the driver's belt must read unbuckled before its light shows
@@ -43,8 +43,10 @@ class Econ {
     this.kw += (kw - this.kw) * 0.25;
     const v = Math.abs(this.kw) < 0.3 ? 0 : this.kw;
     // how far each side reaches, as a share of the bar (across it, or up and down it in the wide strip: app.css)
-    this.box.style.setProperty('--pos', `${Math.min(50, Math.max(0, v) / ECON_DRIVE_KW * 50).toFixed(1)}%`);
-    this.box.style.setProperty('--neg', `${Math.min(50, Math.max(0, -v) / ECON_REGEN_KW * 50).toFixed(1)}%`);
+    // (to a fifth of a percent of the bar: below a pixel, and steady at a steady power, so it isn't rewritten every frame)
+    const share = (x, full) => `${(Math.round(Math.min(50, Math.max(0, x) / full * 50) * 5) / 5).toFixed(1)}%`;
+    setStyleVar(this.box, '--pos', share(v, ECON_DRIVE_KW));
+    setStyleVar(this.box, '--neg', share(-v, ECON_REGEN_KW));
     this.hist.push([t, kw]);
     while (this.hist.length && t - this.hist[0][0] > ECON_SECONDS) this.hist.shift();
     if (this.card.classList.contains('graph')) this.draw(t);
@@ -223,7 +225,7 @@ export class Hud {
     else if (tja && (tja.v === 3 || tja.v === 4)) { latCls = 'active'; latText = 'Fisker autosteer'; }
     else if (!cc && f && f.vehicle && f.vehicle.epsLatCtrl && f.vehicle.epsLatCtrl.v === 2) { latCls = 'active'; latText = 'Steering'; }   // the car's own buses: the EPS is being steered
     else if ((mads && mads.available) || (ss && ss.engageable) || (!cc && f && f.vehicle && f.vehicle.epsLatCtrl && f.vehicle.epsLatCtrl.v === 1)) latCls = 'available';
-    this.latIcon.className = 'assist-icon ' + latCls;
+    setClassName(this.latIcon, 'assist-icon ' + latCls);
 
     // ACC set speed: Fisker ADAS (cluster unit) first, then openpilot's cruise state
     const acc = f && f.acc;
@@ -247,14 +249,14 @@ export class Hud {
       engaged = true;
     }
     setText(this.setspeedVal, set == null ? '--' : String(Math.round(set)));
-    this.setspeed.className = 'setspeed ' + (engaged ? 'engaged' : available ? 'available' : 'off');
+    setClassName(this.setspeed, 'setspeed ' + (engaged ? 'engaged' : available ? 'available' : 'off'));
 
     // following distance: Fisker time gap (1-4) or openpilot personality (1-3)
     let bars = 0, maxBars = 4;
     if (acc && acc.timeGap >= 1 && acc.timeGap <= 4) bars = acc.timeGap;
     else if (cc && cc.hud && cc.hud.leadDistanceBars) { bars = cc.hud.leadDistanceBars; maxBars = 3; }
     else if (op.selfdriveState && PERSONALITY_BARS[op.selfdriveState.personality]) { bars = PERSONALITY_BARS[op.selfdriveState.personality]; maxBars = 3; }
-    $$('i', this.gap).forEach((b, i) => { setClass(b, 'on', i < bars); b.style.display = i < maxBars ? '' : 'none'; });
+    $$('i', this.gap).forEach((b, i) => { setClass(b, 'on', i < bars); const d = i < maxBars ? '' : 'none'; if (b.style.display !== d) b.style.display = d; });
     setClass(this.gap, 'engaged', engaged);
 
     // status line
@@ -268,8 +270,12 @@ export class Hud {
       if (engaged) parts.push(set != null ? `ACC ${Math.round(set)}` : 'ACC');
       text = parts.join(' · ');
     } else if (op.selfdriveState && op.selfdriveState.experimentalMode) text = 'Experimental mode';
-    this.assistText.innerHTML = '';
-    if (text) this.assistText.append(latCls === 'active' || engaged ? el('b', text) : text);
+    const bold = latCls === 'active' || engaged, key = (bold ? 'b:' : ':') + text;
+    if (this.assistKey !== key) {   // (rebuilt only when it changes: the HUD updates every frame)
+      this.assistKey = key;
+      this.assistText.innerHTML = '';
+      if (text) this.assistText.append(bold ? el('b', text) : text);
+    }
   }
 
   _limit(op, f, unit, conv, v, settings) {
@@ -297,7 +303,7 @@ export class Hud {
   _telltales(op, f, cs, lights) {
     const show = (name, color) => {
       const t = this.tt[name];
-      t.className = 'tt' + (color ? ' ' + color : '') + (color === false ? ' hidden' : '');
+      setClassName(t, 'tt' + (color ? ' ' + color : '') + (color === false ? ' hidden' : ''));
     };
     show('beam', lights.high ? 'blue' : (lights.low ? 'green' : false));
     // unbuckled for BELT_HOLD_S on end: a frame or two of "not buckled" (the buckle switch's message now and then

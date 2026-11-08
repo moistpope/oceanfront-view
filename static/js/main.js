@@ -1,6 +1,6 @@
 // Oceanscape entry point: renders the car view from the car's own buses (IBUS1/IBUS2, through the Android
 // app), joins the comma's stream when it is there, and wires the controls.
-import { $, $$, el, api, fmtTime, iconSvg, setClass, setText, store, save } from './util.js';
+import { $, $$, el, api, fmtTime, iconSvg, setClass, setText, store, save, setClassName, setTitle } from './util.js';
 import { CarScene } from './scene.js';
 import { CarControls } from './carcontrols.js';
 import { OCEAN_PAINT_DEFAULT, OCEAN_WHEELS_DEFAULT } from './models.js';
@@ -378,9 +378,9 @@ class App {
     const st = this.state;
     const replay = st && st.mode === 'replay' && st.replay;
     const chip = $('#chip-mode');
-    chip.className = 'chip ' + (replay ? 'replay' : 'ok');
+    setClassName(chip, 'chip ' + (replay ? 'replay' : 'ok'));
     setText(chip, replay ? 'REPLAY' : 'LIVE');
-    chip.title = replay ? 'A recorded drive, played by the comma' : this.source === 'car' ? (st.comma ? "The car's own buses, with the comma's ADAS bus, radar and openpilot" : "The car's own buses") : '';
+    setTitle(chip, replay ? 'A recorded drive, played by the comma' : this.source === 'car' ? (st.comma ? "The car's own buses, with the comma's ADAS bus, radar and openpilot" : "The car's own buses") : '');
     setClass($('#replaybar'), 'hidden', !replay);
   }
 
@@ -393,9 +393,9 @@ class App {
     const st = this.state && this.state.server ? this.state : this.commaState;
     const server = st && st.server;
     const warn = server && server.liveError;
-    chip.className = 'chip ' + (warn ? 'warn' : 'ok');
+    setClassName(chip, 'chip ' + (warn ? 'warn' : 'ok'));
     setText(chip, warn ? 'comma: no live data' : 'comma');
-    chip.title = warn ? `The comma can't read the car: ${server.liveError}` : 'Connected to the comma. Tap to manage it.';
+    setTitle(chip, warn ? `The comma can't read the car: ${server.liveError}` : 'Connected to the comma. Tap to manage it.');
   }
 
   // The worker sends the map's roads layer (map.roads, state.js `_roadsLayer`) only in the snapshot it was rebuilt in;
@@ -453,9 +453,9 @@ class App {
     if (!on) return;
     const st = this.state;
     const r = st && st.radar;
-    chip.className = 'chip ' + (r ? 'radar' : 'warn');
+    setClassName(chip, 'chip ' + (r ? 'radar' : 'warn'));
     setText(chip, r ? `radar ${r.count}` : 'no radar');
-    chip.title = r ? 'Tracks the mid-range radar reports this cycle' : 'No radar frames: the radar\'s private bus comes through the comma, whose harness must tap it';
+    setTitle(chip, r ? 'Tracks the mid-range radar reports this cycle' : 'No radar frames: the radar\'s private bus comes through the comma, whose harness must tap it');
   }
 
   watchdog() {
