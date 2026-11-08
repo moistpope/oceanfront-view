@@ -28,14 +28,25 @@ uniform float uDrape;          // m over which a car rises out of the ground
 uniform sampler2D tEgo;        // our car from above: r draped, g exact, b glass
 uniform float uEgoOn, uEgoSharp;
 uniform sampler2D tDef;        // the road from above: rgb its lines' colors, a where there is road
-uniform mat4 uDefVP, uDefInv;   // the road map's camera (DEF) and its inverse
+uniform mat4 uDefInv;           // the inverse of the road map's camera (DEF)
+uniform vec3 uDefU, uDefV, uDefW;   // its camera on the ground plane: uv = (U, V) . (x, z, 1) / W . (x, z, 1)
 uniform float uLineH;
 uniform mat4 uWorldInv;   // scene -> ground-fixed (scene.js world) coordinates
 const vec4 EGO_B = vec4(${EGO_B.x0}, ${EGO_B.x1}, ${EGO_B.z0}, ${EGO_B.z1});
 float sdBox(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 vec2 vehLocal(int i, vec2 p) { vec2 d = p - uVeh[i].xy; vec4 b = uVehB[i]; return vec2(d.x * b.x - d.y * b.y, d.x * b.y + d.y * b.x); }
 float vehD(int i, vec2 p) { return sdBox(vehLocal(i, p), uVeh[i].zw, min(0.5, uVeh[i].z * 0.6)); }
-vec2 defUv(vec2 p) { vec4 c = uDefVP * vec4(p.x, 0.0, p.y, 1.0); return c.w > 0.0 ? c.xy / c.w * 0.5 + 0.5 : vec2(-1.0); }
+// (most of a pixel's reads are at one ground point, so the last one is kept: the projection is a divide and nine
+// multiply-adds, and the styles read the maps there a dozen times)
+vec2 gDefP = vec2(1e9), gDefUv;
+vec2 defUv(vec2 p) {
+  if (p == gDefP) return gDefUv;
+  vec3 q = vec3(p, 1.0);
+  float w = dot(uDefW, q);
+  gDefP = p;
+  gDefUv = w > 0.0 ? vec2(dot(uDefU, q), dot(uDefV, q)) / w : vec2(-1.0);
+  return gDefUv;
+}
 // the ground point (scene X, Z) a texel of the road map shows: its ray from the camera, to the ground
 vec2 defGround(vec2 uv) {
   vec2 n = uv * 2.0 - 1.0;

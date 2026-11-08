@@ -126,6 +126,15 @@ float tailBake(vec2 p) {
   return t;
 }`;
 
+// The road map's camera restricted to the ground plane (y 0): uv = (U, V) . (x, z, 1) / W . (x, z, 1), uv 0..1. A plane
+// mapping (three dot products and a divide) for the styles' shaders instead of the full matrix.
+function defPlane(vp) {
+  const e = vp.elements;   // column-major: clip = col0 * x + col2 * z + col3
+  const row = (r) => [e[r], e[8 + r], e[12 + r]];
+  const [X, Y, W] = [row(0), row(1), row(3)];
+  const half = (a) => new THREE.Vector3(0.5 * (a[0] + W[0]), 0.5 * (a[1] + W[1]), 0.5 * (a[2] + W[2]));
+  return { uDefU: { value: half(X) }, uDefV: { value: half(Y) }, uDefW: { value: new THREE.Vector3(...W) } };
+}
 // the light map's size: the road map's area at 16 cm a texel
 const LIGHT_W = 320, LIGHT_H = 896;
 // one texel of the light map: the surface's height there (with our car on it), its shadow and occlusion
@@ -247,7 +256,7 @@ export class GroundSurface {
       tDef: { value: this.defRT.texture }, tHeight: { value: this.heightRT.texture }, tCov: { value: this.covRT.texture },
       tLight: { value: this.lightRT.texture }, tCarPaint: { value: this.carPaintRT.texture }, tCarTint: { value: this.carTintRT.texture },
       tGlow: { value: this.glowRT[1].texture }, tBloom: { value: this.bloomRT[1].texture }, uDark: { value: 0 },
-      uDefVP: { value: this.defVP }, uDefInv: { value: this.defVP.clone().invert() }, uLineH: { value: LINE_H }, uCrisp: { value: 0 },
+      uDefInv: { value: this.defVP.clone().invert() }, ...defPlane(this.defVP), uLineH: { value: LINE_H }, uCrisp: { value: 0 },
       uRidgeD: { value: Array.from({ length: RIDGE_MAX }, () => new THREE.Vector2()) }, uRidgeS: { value: new Float32Array(RIDGE_MAX).fill(0.5) },
       uRidgeN: { value: 0 }, uRidgeH: { value: DEFAULT_PROFILE.ridge }, uWorldInv: { value: new THREE.Matrix4() },
       uLook: { value: new THREE.Vector4(...BASE_LIGHT.look) }, uKey: { value: new THREE.Vector3(...BASE_LIGHT.key).normalize() },
