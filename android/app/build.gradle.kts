@@ -43,8 +43,8 @@ android {
         applicationId = "ai.sunnypilot.webhud"
         minSdk = 26
         targetSdk = 36
-        versionCode = 16
-        versionName = "1.6.3"
+        versionCode = 17
+        versionName = "1.6.4"
     }
 
     buildTypes {
