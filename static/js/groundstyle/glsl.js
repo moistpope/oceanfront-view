@@ -35,6 +35,8 @@ uniform mat4 uWorldInv;   // scene -> ground-fixed (scene.js world) coordinates
 const vec4 EGO_B = vec4(${EGO_B.x0}, ${EGO_B.x1}, ${EGO_B.z0}, ${EGO_B.z1});
 float sdBox(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 vec2 vehLocal(int i, vec2 p) { vec2 d = p - uVeh[i].xy; vec4 b = uVehB[i]; return vec2(d.x * b.x - d.y * b.y, d.x * b.y + d.y * b.x); }
+// whether p is within m of car i at all (a circle round its box): the bakes skip the far cars' exact distance
+bool vehNear(int i, vec2 p, float m) { vec2 d = p - uVeh[i].xy; float R = uVeh[i].z + uVeh[i].w + m; return dot(d, d) < R * R; }
 float vehD(int i, vec2 p) { return sdBox(vehLocal(i, p), uVeh[i].zw, min(0.5, uVeh[i].z * 0.6)); }
 // (most of a pixel's reads are at one ground point, so the last one is kept: the projection is a divide and nine
 // multiply-adds, and the styles read the maps there a dozen times)
@@ -111,6 +113,7 @@ vec4 vehPaintLoop(vec2 p) {
   vec3 c = vec3(0.0); float m = 0.0;
   for (int i = 0; i < MAX_VEH; i++) {
     if (i >= uNVeh) break;
+    if (!vehNear(i, p, 0.3)) continue;
     float w = smoothstep(0.3, -0.2, vehD(i, p)) * abs(uVehB[i].w);
     c += uVehC[i] * w; m += w;
   }
@@ -123,6 +126,7 @@ vec4 vehTintLoop(vec2 p) {
   vec3 c = vec3(0.0); float m = 0.0;
   for (int i = 0; i < MAX_VEH; i++) {
     if (i >= uNVeh) break;
+    if (uVehP[i] < 0.5 || !vehNear(i, p, 0.9)) continue;
     float w = smoothstep(0.9, -0.6, vehD(i, p)) * abs(uVehB[i].w) * uVehP[i];
     c += uVehC[i] * w; m += w;
   }
@@ -189,7 +193,8 @@ float shadowMarch(vec2 p, float h) {
 }
 float aoMarch(vec2 p, float h) {
   float a = 0.0;
-  for (int i = 0; i < 6; i++) { float t = float(i) * 1.0472; a += heightAt(p + vec2(cos(t), sin(t)) * 0.5) * 0.6 + heightAt(p + vec2(cos(t + 0.5), sin(t + 0.5)) * 1.1) * 0.4; }
+  // one ring of six at 0.75 m, between the two rings (0.5 and 1.1 m) it once took: the creases it darkens are broad
+  for (int i = 0; i < 6; i++) { float t = float(i) * 1.0472 + 0.25; a += heightAt(p + vec2(cos(t), sin(t)) * 0.75); }
   return clamp(1.0 - max(a / 6.0 - h, 0.0) * 2.4, 0.25, 1.0);
 }
 #ifndef LIGHT_BAKE
