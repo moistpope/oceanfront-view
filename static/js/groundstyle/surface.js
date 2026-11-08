@@ -137,7 +137,8 @@ function defPlane(vp) {
 }
 // the light map's size: the road map's area at 16 cm a texel
 const LIGHT_W = 320, LIGHT_H = 896;
-const ROAD_EVERY = 2;   // frames between renders of the road map (it's fixed to the ground: roadUv carries it in between)
+const ROAD_EVERY = 1;   // frames between renders of the road map (fixed to the ground, roadUv carries it in between; every
+                        // other frame measured no faster on the Pulse, so every frame)
 // one texel of the light map: the surface's height there (with our car on it), its shadow and occlusion
 const LIGHT_FS = `
 ${STYLE_GLSL}
