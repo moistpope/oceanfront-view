@@ -17,8 +17,8 @@
 // alike are one object seen twice (world_model.js merges them).
 //
 // The sensors report the face of an object nearest to them, the track keeps its center: centerOf() moves a
-// reported point back along the line of sight by the object's half extent in that direction (its half length
-// seen end-on, half width side-on, between in between), and faceOf() the other way for the output.
+// reported point on along the object's own axes (half its length seen end-on, half its width side-on), and faceOf()
+// the other way for the output.
 
 // ---- classes ----------------------------------------------------------------------------------------
 
@@ -63,6 +63,9 @@ const SIGMA_JERK = 2.5;    // m/s^3: how fast acceleration changes (process nois
 const SIGMA_LAT_JERK = 3.0;   // m/s^3: how fast lateral acceleration (v^2 k) changes, which sets the curvature's noise
 const SIGMA_POS = 0.15;    // m/sqrt(s): what the model misses (a lane change's start, potholes, the sensors' sway)
 const SIGMA_WALK_TURN = 2.0;   // rad/sqrt(s): how freely a pedestrian turns
+const REACQ_S = 1.0;       // s of measured positions observe() fits a motion to...
+const REACQ_MIN_V = 1.5;   // ...which, moving at least this fast (m/s)...
+const REACQ_DV = 4.0;      // ...and this far from the estimate's velocity (m/s), replaces its heading and speed
 // the most each state's variance may grow to: position 30 m, heading pi, speed 30 m/s, acceleration 10 m/s^2,
 // curvature 0.5 /m (1 sigma)
 const MAX_VAR = [900, 900, Math.PI ** 2, 900, 100, 0.25];
@@ -225,6 +228,34 @@ export class PhysFilter {
     this.flips++;
   }
 
+  /** Where its centers have been placed by measurements lately (t, x, y), and, when they move plainly faster than
+   *  the estimate says (a car crossing in front, one pulling out of a space), the estimate's heading and speed taken
+   *  afresh from that motion. Near zero speed the filter can't learn a heading from a velocity (it only enters as
+   *  speed times direction), so without this a crossing car can stay pinned standing. */
+  observe(t, x, y) {
+    const H = (this.hist ||= []);
+    H.push([t, x, y]);
+    while (H.length && t - H[0][0] > REACQ_S) H.shift();
+    if (H.length < 8 || t - H[0][0] < REACQ_S * 0.8) return;
+    // least squares slopes of x and y over the window
+    const n = H.length, mt = H.reduce((a, h) => a + h[0], 0) / n;
+    let stt = 0, sx = 0, sy = 0, mx = 0, my = 0;
+    for (const h of H) { mx += h[1] / n; my += h[2] / n; }
+    for (const h of H) { const d = h[0] - mt; stt += d * d; sx += d * (h[1] - mx); sy += d * (h[2] - my); }
+    if (stt <= 0) return;
+    const ux = sx / stt, uy = sy / stt, us = Math.hypot(ux, uy);
+    const [vx, vy] = this.vel;
+    if (us < REACQ_MIN_V || Math.hypot(ux - vx, uy - vy) < REACQ_DV) return;
+    this.X[2] = Math.atan2(uy, ux);
+    this.X[3] = Math.min(us, limitsOf(this.cls).vMax);
+    this.X[4] = 0; this.X[5] = 0;
+    for (let i = 2; i < 6; i++) for (let j = 0; j < 6; j++) if (i !== j) { this.P[i][j] = 0; this.P[j][i] = 0; }
+    // as unsure of its speed as a new track (the drawn body takes the estimate until it settles)
+    this.P[2][2] = 0.3 ** 2; this.P[3][3] = 3.5 ** 2; this.P[4][4] = 2.0 ** 2; this.P[5][5] = 0.02 ** 2;
+    this.reacq = (this.reacq || 0) + 1;
+    H.length = 0;
+  }
+
   /** While its heading is still a guess, a track that turns out to be moving backwards faster than it could
    *  reverse is facing the other way (an oncoming car first guessed to face our way). */
   settle() {
@@ -276,11 +307,11 @@ const STEER_RATE = 0.6;      // rad/s at the front wheels: how fast it can turn 
 const SETTLED_SV = 3.0;     // m/s: the speed's sigma below which the estimate's speed is known (settled tracks: ~2)
 const SNAP_M = 6.0;          // farther than this from its estimate, or than SNAP_S of its travel, it's put there
 const SNAP_S = 0.4;          // (a new object, a re-association)
-const SNAP_TURN_S = 1.5;     // standing this long facing more than SNAP_TURN away from its estimate, it's turned
-const SNAP_TURN = 0.6;         // (a standing car's heading only becomes known once a sensor says which way it faces)
-const STILL_V = 0.5;           // m/s: slower than this, estimate and body both, it's standing...
-const STILL_DEADBAND = 0.35;   // ...and moves only to an estimate this far off along it (m)...
-const CREEP_V = 1.0;           // ...at this pace (m/s)
+const SLOW_V = 2.0;            // m/s: slower than this, estimate and body both, a body goes straight to its estimate...
+const STILL_DEADBAND = 0.3;    // ...once it's this far off (m)...
+const CREEP_V = 1.0;           // ...at least this fast (m/s)...
+const SLOW_TURN = 25 * Math.PI / 180;         // ...and turns toward the estimate's heading this fast (rad/s)...
+const HEADING_DEADBAND = 3 * Math.PI / 180;   // ...once it's more than this off
 
 /** A road user as it's drawn: a kinematic bicycle driven by steering and throttle under its class's limits toward
  *  its filter's estimate, so what's seen moves like a vehicle, whatever the sensors' noise does to the estimate.
@@ -293,7 +324,6 @@ export class SimBody {
     this.cls = f.cls;
     this.dims = f.dims;
     this.delta = 0;       // front-wheel angle (rad)
-    this.misaligned = 0;  // s it has stood facing away from its estimate
   }
 
   get footprint() { return footprintOf(this.cls, this.dims); }
@@ -324,22 +354,26 @@ export class SimBody {
       X[4] = a; X[5] = 0;
       return;
     }
-    // a standing car whose estimate faces another way: it can't turn there, so once that's settled it's turned
-    if (Math.abs(X[3]) < 0.5 && Math.abs(T[3]) < 0.5 && Math.abs(wrap(T[2] - X[2])) > SNAP_TURN) {
-      this.misaligned += dt;
-      if (this.misaligned > SNAP_TURN_S) { this.X = T.slice(); this.delta = 0; this.misaligned = 0; return; }
-    } else this.misaligned = 0;
+    // slow (the estimate and the body both): at a walk, an estimate's sideways noise and a heading only now becoming
+    // known matter more than the tyres. The body goes straight to its estimate at a walking pace beyond a deadband,
+    // and turns toward the estimate's heading gently: it never drifts off along a wrong heading, and is never left
+    // facing the wrong way to snap round later
+    if (Math.abs(T[3]) < SLOW_V && Math.abs(X[3]) < SLOW_V) {
+      const reach = err - STILL_DEADBAND;
+      if (reach > 0) {
+        const step = Math.min(reach, Math.max(CREEP_V, Math.abs(T[3]) + GAP_GAIN * reach) * dt);
+        X[0] += ex / err * step; X[1] += ey / err * step;
+      }
+      X[3] = Math.abs(T[3]) > 0.3 ? T[3] : 0;
+      X[4] = 0; X[5] = 0; this.delta = 0;
+      const dh = wrap(T[2] - X[2]);
+      if (Math.abs(dh) > HEADING_DEADBAND) X[2] = wrap(X[2] + clamp(dh, -SLOW_TURN * dt, SLOW_TURN * dt));
+      return;
+    }
     // speed: the estimate's, plus what closes the gap along our heading (reversing only as the estimate does)
     const along = ex * c + ey * s;
-    let want;
-    if (Math.abs(T[3]) < STILL_V && Math.abs(X[3]) < STILL_V) {
-      // standing: its estimate's noise isn't motion. It stays put unless the estimate is clearly elsewhere along it,
-      // then rolls there (either way: a stopped car can roll back a little) at walking pace
-      want = Math.abs(along) < STILL_DEADBAND ? 0 : clamp(GAP_GAIN * (along - Math.sign(along) * STILL_DEADBAND), -Math.min(CREEP_V, L.reverse || CREEP_V), CREEP_V);
-    } else {
-      want = T[3] * Math.cos(wrap(T[2] - X[2])) + GAP_GAIN * along;
-      want = clamp(want, T[3] < -0.3 ? -L.reverse : 0, L.vMax);
-    }
+    let want = T[3] * Math.cos(wrap(T[2] - X[2])) + GAP_GAIN * along;
+    want = clamp(want, T[3] < -0.3 ? -L.reverse : 0, L.vMax);
     const v = X[3], av = Math.abs(v);
     const push = Math.min(L.accel, L.power / (massOf(this.cls, this.dims) * Math.max(av, 1)), L.latMax);
     const a = clamp((want - v) / SPEED_TAU, v >= 0 ? -L.brake : -push, v >= 0 ? push : L.brake);
@@ -367,27 +401,33 @@ export class SimBody {
 
 // ---- line of sight: center <-> the face a sensor sees ------------------------------------------------------
 
-/** How far a box's boundary is from its center along unit direction (dx, dy): w, l its size, psi its heading. */
-export function halfExtent(w, l, psi, dx, dy) {
-  const c = Math.cos(psi), s = Math.sin(psi);
-  const along = Math.abs(dx * c + dy * s), across = Math.abs(-dx * s + dy * c);
-  // a box's support: the distance to the boundary along the ray, capped by the box's half diagonal
-  const t = Math.min(along > 1e-6 ? (l / 2) / along : Infinity, across > 1e-6 ? (w / 2) / across : Infinity);
-  return Math.min(t, Math.hypot(w, l) / 2);
+const SIDE_ON_COS = 0.5;   // seen within 60 deg of side-on, a sensor's point is on its side; else on its end
+
+/** From the face a sensor sees (dx, dy from the sensor) to the box's center: along the box's own axes, not the line
+ *  of sight. The sensors report the face nearest them: a car's back (its front, behind us) seen end-on, or its side
+ *  seen side-on, so the center is half a length on along the car (or half a width across it), away from the
+ *  sensor. (Along the line of sight, a long truck seen at an angle has its corner taken for its side, and its
+ *  center put half a width beyond it instead of half its length: the 18 m truck drawn reaching back to us.) */
+function faceOffset(dx, dy, w, l, psi) {
+  const r = Math.hypot(dx, dy);
+  if (r < 1e-6 || (w === 0 && l === 0)) return [0, 0];
+  const ax = Math.cos(psi), ay = Math.sin(psi);
+  const along = (dx * ax + dy * ay) / r;   // cosine between the line of sight and its length
+  if (Math.abs(along) >= SIDE_ON_COS) { const k = Math.sign(along) * l / 2; return [k * ax, k * ay]; }
+  const k = Math.sign(dy * ax - dx * ay) * w / 2;   // which of its sides faces the sensor
+  return [-k * ay, k * ax];
 }
 
 /** The center of a box whose face nearest to the sensor at (ox, oy) is at (fx, fy). */
 export function centerOf(fx, fy, ox, oy, w, l, psi) {
-  const dx = fx - ox, dy = fy - oy, r = Math.hypot(dx, dy) || 1;
-  const e = halfExtent(w, l, psi, dx / r, dy / r);
-  return [fx + dx / r * e, fy + dy / r * e];
+  const [dx, dy] = faceOffset(fx - ox, fy - oy, w, l, psi);
+  return [fx + dx, fy + dy];
 }
 
 /** The face nearest to the sensor at (ox, oy) of a box centered at (cx, cy). */
 export function faceOf(cx, cy, ox, oy, w, l, psi) {
-  const dx = cx - ox, dy = cy - oy, r = Math.hypot(dx, dy) || 1;
-  const e = Math.min(halfExtent(w, l, psi, dx / r, dy / r), r);
-  return [cx - dx / r * e, cy - dy / r * e];
+  const [dx, dy] = faceOffset(cx - ox, cy - oy, w, l, psi);
+  return [cx - dx, cy - dy];
 }
 
 // ---- no two in one place --------------------------------------------------------------------------------

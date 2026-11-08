@@ -63,6 +63,7 @@ const OP_MIN_PROB = 0.5;
 const LEAD_TWO_SAME_M = 6.0;       // openpilot's leadTwo within this (or LEAD_TWO_SAME_FRAC of the range) ahead or behind
 const LEAD_TWO_SAME_FRAC = 0.15;   // leadOne and LEAD_TWO_SAME_Y beside it is the same car
 const LEAD_TWO_SAME_Y = 2.0;
+const OP_SAME_LEAD_M = 4.0;        // openpilot's two leads this close in one report are one car
 const GATE = 16.0;                 // Mahalanobis^2 (4 sigma) to associate a measurement with a track...
 const GATE_M = 3.0;                // ...and no farther than this plus 2.5 sigma of the measurement, whatever the covariance
 const MERGE_GATE = 4.0;            // two tracks this close (and within MERGE_M) are one object...
@@ -293,6 +294,7 @@ const RANK_SRC = { 0: 'adas', 1: 'radar', 2: 'op' };
 // how sure a source's heading is (rad, 1 sigma); only used while an object is slow, where its motion can't tell
 const HEADING_SIGMA = { adas: 0.35, radar: 0.25, op: 0.6 };
 const HEADING_MEAS_MAX_V = 3.0;   // m/s: faster, the heading is the motion's
+const LANE_SIGMA = 0.3;          // rad: how far a new moving object's heading may be from the lane's (along ours, or against)
 const EGO_W = 1.98, EGO_L = 4.775; // m: our footprint (the rear axle 0.925 m from the back)
 
 /** A measured class as the physical model knows it. */
@@ -311,7 +313,12 @@ class Track {
     const [w, l] = cls === 'unknown' && !m.dims ? [0, 0] : footprintOf(cls, m.dims);
     const c = centerOf(z[0], z[1], o[0], o[1], w, l, psi0);
     let v0 = vEgo, sV = Math.max(6, 0.6 * Math.abs(vEgo));
-    if (v !== null) { v0 = v[0] * Math.cos(psi0) + v[1] * Math.sin(psi0); sV = 2.0; }
+    if (v !== null) {
+      // its measured velocity along the heading guess, as sure as the part across it allows (a crossing car the radar
+      // reports only sideways mustn't be pinned standing)
+      v0 = v[0] * Math.cos(psi0) + v[1] * Math.sin(psi0);
+      sV = Math.max(2.0, Math.abs(-v[0] * Math.sin(psi0) + v[1] * Math.cos(psi0)));
+    }
     if (limitsOf(cls).walks) { v0 = 0; sV = 2.0; }
     this.f = new PhysFilter(c[0], c[1], Rp, psi0, sPsi0, v0, sV, cls);
     this.f.dims = m.dims;
@@ -367,8 +374,19 @@ class Track {
     return quad2(S, [c[0] - this.f.X[0], c[1] - this.f.X[1]]);
   }
 
-  update(z, o, Rp, v, Rv) {
-    this.f.updatePos(this.centerFor(z, o), Rp);
+  update(z, o, Rp, v, Rv, t) {
+    const c = this.centerFor(z, o);
+    this.f.updatePos(c, Rp);
+    const before = this.f.reacq;
+    if (t !== undefined) this.f.observe(t, z[0], z[1]);   // the points as measured: a center moves with the heading guess
+    if (this.f.reacq !== before) {
+      // its motion taken afresh: it's where this measurement puts it (by its new heading), and drawn there too
+      const c2 = this.centerFor(z, o);
+      this.f.X[0] = c2[0]; this.f.X[1] = c2[1];
+      for (let i = 0; i < 2; i++) for (let j = 0; j < 6; j++) { this.f.P[i][j] = this.f.P[j][i] = 0; }
+      this.f.P[0][0] = Rp[0][0]; this.f.P[0][1] = this.f.P[1][0] = Rp[0][1]; this.f.P[1][1] = Rp[1][1];
+      this.body = null;
+    }
     if (v !== null) this.f.updateVel(v, Rv);
     this.f.settle();
   }
@@ -377,6 +395,12 @@ class Track {
   updateHeading(psi, src) {
     if (this.f.speed < HEADING_MEAS_MAX_V || Math.sqrt(this.f.P[2][2]) > 0.5) this.f.updateHeading(psi, HEADING_SIGMA[src] ?? 0.5);
   }
+}
+
+/** Whether the ADAS camera list sees the two as two objects now: each fed by it, under different ids, lately. */
+function seenApart(A, B, t) {
+  const sa = A.sources.adas, sb = B.sources.adas;
+  return !!(sa && sb && sa.id !== sb.id && t - sa.t < 0.5 && t - sb.t < 0.5);
 }
 
 /** Of two tracks that are one object, the one to keep: the one the view shows (confirmed, and sure enough to draw),
@@ -511,25 +535,41 @@ export class WorldModel {
       used.add(tid);
     }
 
+    // openpilot's second lead within a few metres of its first is the same car: with the first's track taken, it
+    // mustn't go to the next nearest (a long truck beside it, whose center its point reached)
+    const op0 = meas.find(([m]) => m.src === 'op' && m.sid === 0);
+    const sameLead = ([m]) => m.src === 'op' && m.sid === 1 && op0 && hypot(m.x - op0[0].x, m.y - op0[0].y) < OP_SAME_LEAD_M;
     meas.forEach(([m, z, , Rp, v, Rv], k) => {
       let tid = assigned.get(k);
       let innovation;
+      if (sameLead(meas[k]) && tid !== this.sticky.get(`op:0`)) return;
       if (tid === undefined) {
         if (m.src === 'op' && (m.info.modelProb ?? 1.0) < OP_MIN_PROB) return;
         tid = this.nextId++;
         // which way it faces: as it moves (a measured velocity), else as a source says, else (most of what's around us)
         // as we do, though
         // loosely: an oncoming car turns itself round once it's seen to move toward us (PhysFilter.settle)
+        // a measured velocity says which way along the road it goes, but not its angle: the radar's sideways
+        // velocity is too noisy for that (a truck started 9 deg across the road, its 20 m box sweeping into our lane).
+        // So a moving object starts lane-aligned, our way or the other, and its motion turns it from there
         let psi0 = pose[2], sPsi0 = 1.2;
-        if (v !== null && hypot(v[0], v[1]) > HEADING_FROM_MOTION) { psi0 = Math.atan2(v[1], v[0]); sPsi0 = 0.3; }
-        else if (m.heading !== null) { psi0 = pose[2] + m.heading * Math.PI / 180; sPsi0 = HEADING_SIGMA[m.src] ?? 0.5; }
+        const sp = v !== null ? hypot(v[0], v[1]) : 0;
+        if (sp > HEADING_FROM_MOTION) {
+          // the measured direction, as sure as its sideways noise allows at that speed, blended with the lane's
+          // direction (ours, or the other way for an oncoming one)
+          const dir = Math.atan2(v[1], v[0]);
+          const lane = Math.abs(wrap(dir - pose[2])) <= Math.PI / 2 ? pose[2] : pose[2] + Math.PI;
+          const sDir = Math.atan2(m.vy !== null ? m.svy : 10.0, sp), wDir = 1 / sDir ** 2, wLane = 1 / LANE_SIGMA ** 2;
+          psi0 = lane + wrap(dir - lane) * wDir / (wDir + wLane);
+          sPsi0 = Math.sqrt(1 / (wDir + wLane));
+        } else if (m.heading !== null) { psi0 = pose[2] + m.heading * Math.PI / 180; sPsi0 = HEADING_SIGMA[m.src] ?? 0.5; }
         this.tracks.set(tid, new Track(tid, t, z, o, Rp, v, Rv, m, psi0, sPsi0, vEgo));
         innovation = [0, 0];
       } else {
         const tr = this.tracks.get(tid);
         const c = tr.centerFor(z, o);
         innovation = [c[0] - tr.pos[0], c[1] - tr.pos[1]];
-        tr.update(z, o, Rp, v, Rv);
+        tr.update(z, o, Rp, v, Rv, t);
       }
       const tr = this.tracks.get(tid);
       this._annotate(tr, m, matvec(Rt, innovation), pose[2]);
@@ -590,6 +630,9 @@ export class WorldModel {
         const d = [A.pos[0] - B.pos[0], A.pos[1] - B.pos[1]];
         const same = sameSourceId(A, B);
         const overlaps = forced.has(`${a}:${b}`);
+        // never two objects the camera sees apart now (a car beside a truck, which merged gave the car the truck's
+        // class and length)
+        if (seenApart(A, B, this.lastNow ?? A.t)) continue;
         let keep, drop;
         if (same) {
           // one object split in two (its measurement jumped out of its own track's gate): the copy the source fed
@@ -649,12 +692,7 @@ export class WorldModel {
     // two tracks are surely two objects only when the ADAS camera list has told them apart, seeing each under its
     // own id now (openpilot's two leads don't: its second is most often the first again). Otherwise overlapping
     // tracks are one object seen twice
-    const seenAs = (tr, src) => (tr.sources[src] && t - tr.sources[src].t < 0.5 ? tr.sources[src].id : null);
-    const distinct = (a, b) => {
-      const A = this.tracks.get(a), B = this.tracks.get(b);
-      const ia = seenAs(A, 'adas'), ib = seenAs(B, 'adas');
-      return ia !== null && ib !== null && ia !== ib;
-    };
+    const distinct = (a, b) => seenApart(this.tracks.get(a), this.tracks.get(b), t);
     const same = separate([...this.tracks.values()].map(tr => ({ f: tr.f, id: tr.id })), ego, 3, distinct);
     if (same.length) this._merge(same);
   }

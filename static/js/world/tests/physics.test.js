@@ -96,14 +96,27 @@ describe('the drawn body', () => {
     near(b.X[2], 0, 0.05, 'straightened out');
   });
 
-  test('a standing body does not spin to a new heading, and is turned only once that has held', () => {
+  test('a standing body turns toward a newly known heading gently, and stays where it stands', () => {
     const f = new PhysFilter(0, 0, I2(0.3), 0, 0.05, 0, 0.3, 'car');
     const b = new SimBody(f);
     const T = [0, 0, Math.PI / 2, 0, 0, 0];
-    for (let i = 0; i < 20; i++) b.follow(f, T, 0.05);   // 1 s
-    near(b.X[2], 0, 1e-9, 'still facing the old way');
-    for (let i = 0; i < 20; i++) b.follow(f, T, 0.05);   // past SNAP_TURN_S
-    near(b.X[2], Math.PI / 2, 1e-9);
+    let prev = b.X[2];
+    for (let i = 0; i < 20; i++) {   // 1 s
+      b.follow(f, T, 0.05);
+      assert.ok(Math.abs(b.X[2] - prev) <= 25 * Math.PI / 180 * 0.05 + 1e-9, 'no faster than 25 deg/s');
+      prev = b.X[2];
+    }
+    near(b.X[2], 25 * Math.PI / 180, 1e-6, 'a second in');
+    assert.equal(b.X[0], 0); assert.equal(b.X[1], 0);
+    for (let i = 0; i < 80; i++) b.follow(f, T, 0.05);
+    near(b.X[2], Math.PI / 2, 0.06, 'there in the end');
+  });
+
+  test('a slow body goes to its estimate, not off along a wrong heading', () => {
+    const f = new PhysFilter(0, 0, I2(0.3), -0.6, 0.05, 0, 0.3, 'car');
+    const b = new SimBody(f);   // facing 35 deg right
+    for (let i = 0; i < 60; i++) b.follow(f, [0.05 * i, 0, 0, 1.0, 0, 0], 0.05);   // the estimate creeps straight ahead
+    near(b.X[1], 0, 0.35, 'still in its lane');
   });
 });
 
