@@ -85,7 +85,7 @@ uniform sampler2D tCov;
 uniform float uCrisp;
 float paintH(vec2 p) {
   if (uCrisp < 0.5) return 0.0;
-  vec2 uv = defUv(p);
+  vec2 uv = roadUv(p);
   return outside(uv) ? 0.0 : smoothstep(0.05, 0.25, textureLod(tCov, uv, 0.0).r);
 }
 float baseAt(vec2 p) { return roadShape(p) + paintH(p) * uLineH; }
@@ -137,6 +137,7 @@ function defPlane(vp) {
 }
 // the light map's size: the road map's area at 16 cm a texel
 const LIGHT_W = 320, LIGHT_H = 896;
+const ROAD_EVERY = 2;   // frames between renders of the road map (it's fixed to the ground: roadUv carries it in between)
 // one texel of the light map: the surface's height there (with our car on it), its shadow and occlusion
 const LIGHT_FS = `
 ${STYLE_GLSL}
@@ -233,7 +234,7 @@ export class GroundSurface {
     // ...and spread again, about a metre, for their bloom
     this.bloomRT = [half(), half()];
     this.sigmaHalo = 0.3 / texel;
-    this.blurMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: BLUR_FS, depthTest: false, depthWrite: false,
+    this.blurMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: BLUR_FS, depthTest: false, depthWrite: false, blending: THREE.NoBlending,
       uniforms: { tSrc: { value: null }, uStep: { value: new THREE.Vector2() }, uLod: { value: 1 }, uSigma: { value: this.sigmaHalo } } });
     this.blurStep = [new THREE.Vector2(1 / BW, 0), new THREE.Vector2(0, across / BH)];
     this.bloomStep = [new THREE.Vector2(2 / BW, 0), new THREE.Vector2(0, 2 * across / BH)];
@@ -256,7 +257,8 @@ export class GroundSurface {
       tDef: { value: this.defRT.texture }, tHeight: { value: this.heightRT.texture }, tCov: { value: this.covRT.texture },
       tLight: { value: this.lightRT.texture }, tCarPaint: { value: this.carPaintRT.texture }, tCarTint: { value: this.carTintRT.texture },
       tGlow: { value: this.glowRT[1].texture }, tBloom: { value: this.bloomRT[1].texture }, uDark: { value: 0 },
-      uDefInv: { value: this.defVP.clone().invert() }, ...defPlane(this.defVP), uLineH: { value: LINE_H }, uCrisp: { value: 0 },
+      uDefInv: { value: this.defVP.clone().invert() }, ...defPlane(this.defVP),
+      uRoadX: { value: new THREE.Vector3(1, 0, 0) }, uRoadZ: { value: new THREE.Vector3(0, 1, 0) }, uLineH: { value: LINE_H }, uCrisp: { value: 0 },
       uRidgeD: { value: Array.from({ length: RIDGE_MAX }, () => new THREE.Vector2()) }, uRidgeS: { value: new Float32Array(RIDGE_MAX).fill(0.5) },
       uRidgeN: { value: 0 }, uRidgeH: { value: DEFAULT_PROFILE.ridge }, uWorldInv: { value: new THREE.Matrix4() },
       uLook: { value: new THREE.Vector4(...BASE_LIGHT.look) }, uKey: { value: new THREE.Vector3(...BASE_LIGHT.key).normalize() },
@@ -265,10 +267,10 @@ export class GroundSurface {
     }, scene.field.uniforms);
 
     this.bakeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.bakeScene = fullscreen(new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: BAKE_FS, uniforms: this.uniforms, depthTest: false, depthWrite: false }));
+    this.bakeScene = fullscreen(new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: BAKE_FS, uniforms: this.uniforms, depthTest: false, depthWrite: false, blending: THREE.NoBlending }));
     this.lightScene = fullscreen(new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: LIGHT_FS, uniforms: this.uniforms,
-      defines: { LIGHT_BAKE: 1 }, depthTest: false, depthWrite: false }));
-    const carMat = (defines) => new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: CAR_FS, uniforms: this.uniforms, defines, depthTest: false, depthWrite: false });
+      defines: { LIGHT_BAKE: 1 }, depthTest: false, depthWrite: false, blending: THREE.NoBlending }));
+    const carMat = (defines) => new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: CAR_FS, uniforms: this.uniforms, defines, depthTest: false, depthWrite: false, blending: THREE.NoBlending });
     this.carPaintScene = fullscreen(carMat({ CAR_BAKE: 1 }));
     this.carTintScene = fullscreen(carMat({ CAR_BAKE: 1, TINT: 1 }));
     this.lead = null;           // the car we follow this frame: { X, Z (scene), fx, fz (its heading), l, w (half length, half width), gap (m), a }
@@ -421,7 +423,24 @@ export class GroundSurface {
   // The road map (in the style's line colors) and the coverage map, the halo's Gaussian if the profile asks for it,
   // then the height field from them and the cars.
   _render(halo, lines, crisp) {
-    const R = this.sc.renderer, scene = this.sc.scene;
+    const R = this.sc.renderer, scene = this.sc.scene, U = this.uniforms;
+    // the road map and what's made from it are fixed to the ground: rendered every ROAD_EVERY frames (and whenever what
+    // they show may have changed: the style, its line colors), and looked up in between through our motion since (roadUv)
+    const key = `${halo}|${crisp}|${lines ? lines.key || '' : ''}`;
+    const fresh = this._roadKey !== key || !this._roadW || (++this._roadN % ROAD_EVERY) === 0;
+    if (!fresh) {
+      // a point of the scene now, on the ground, then back into the scene as it was: the old inverse of the world's
+      // matrix (ground from scene) inverted, after the new
+      const M = this._roadM.copy(this._roadW).invert().multiply(U.uWorldInv.value), e = M.elements;
+      U.uRoadX.value.set(e[0], e[8], e[12]);
+      U.uRoadZ.value.set(e[2], e[10], e[14]);
+      this._bake(R, scene);
+      return;
+    }
+    this._roadKey = key; this._roadN = 0;
+    (this._roadW || (this._roadW = new THREE.Matrix4())).copy(U.uWorldInv.value);
+    this._roadM = this._roadM || new THREE.Matrix4();
+    U.uRoadX.value.set(1, 0, 0); U.uRoadZ.value.set(0, 1, 0);
     const prevTarget = R.getRenderTarget(), prevBg = scene.background;
     R.getClearColor(this._c);
     const prevAlpha = R.getClearAlpha();
@@ -454,6 +473,12 @@ export class GroundSurface {
         }
       }
     }
+    this._bake(R, scene, prevTarget, prevAlpha, prevBg);
+  }
+
+  // the maps that change with the cars, every frame: the height field, then the light and the cars' paint over it (each a
+  // full-screen pass that writes every texel, unblended: what the target held, or the clear color, never shows through)
+  _bake(R, scene, prevTarget = R.getRenderTarget(), prevAlpha = null, prevBg = null) {
     R.setRenderTarget(this.heightRT);
     R.render(this.bakeScene, this.bakeCam);
     R.setRenderTarget(this.lightRT);
@@ -463,7 +488,9 @@ export class GroundSurface {
     R.setRenderTarget(this.carTintRT);
     R.render(this.carTintScene, this.bakeCam);
     R.setRenderTarget(prevTarget);
-    R.setClearColor(this._c, prevAlpha);
-    scene.background = prevBg;
+    if (prevAlpha !== null) {   // (the road map's render changed them: put them back)
+      R.setClearColor(this._c, prevAlpha);
+      scene.background = prevBg;
+    }
   }
 }

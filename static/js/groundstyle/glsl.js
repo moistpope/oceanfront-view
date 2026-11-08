@@ -47,6 +47,21 @@ vec2 defUv(vec2 p) {
   gDefUv = w > 0.0 ? vec2(dot(uDefU, q), dot(uDefV, q)) / w : vec2(-1.0);
   return gDefUv;
 }
+// The road map and what's made from it (its lines' coverage, glow and bloom) are fixed to the ground, so the surface
+// renders them only every other frame (ROAD_EVERY, surface.js): in between, a point is looked up where it was when they
+// were rendered, through the car's motion since (uRoadX, uRoadZ: the scene then, from the scene now, on the ground).
+uniform vec3 uRoadX, uRoadZ;
+vec2 gRoadP = vec2(1e9), gRoadUv;
+vec2 roadUv(vec2 p) {
+  if (p == gRoadP) return gRoadUv;
+  vec3 q = vec3(p, 1.0);
+  vec2 then = vec2(dot(uRoadX, q), dot(uRoadZ, q));
+  vec3 r = vec3(then, 1.0);
+  float w = dot(uDefW, r);
+  gRoadP = p;
+  gRoadUv = w > 0.0 ? vec2(dot(uDefU, r), dot(uDefV, r)) / w : vec2(-1.0);
+  return gRoadUv;
+}
 // the ground point (scene X, Z) a texel of the road map shows: its ray from the camera, to the ground
 vec2 defGround(vec2 uv) {
   vec2 n = uv * 2.0 - 1.0;
@@ -61,9 +76,9 @@ vec4 egoTex(vec2 p) {
   return textureLod(tEgo, uv, 0.0);
 }
 float egoH(vec2 p) { vec4 e = egoTex(p); return mix(e.r, e.g, uEgoSharp); }
-vec4 defAt(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec4(0.0) : textureLod(tDef, uv, 0.0); }
+vec4 defAt(vec2 p) { vec2 uv = roadUv(p); return outside(uv) ? vec4(0.0) : textureLod(tDef, uv, 0.0); }
 // the road map blurred (its mipmaps): a soft spread of the lines' colors around them
-vec3 defBlur(vec2 p, float lod) { vec2 uv = defUv(p); return outside(uv) ? vec3(0.0) : textureLod(tDef, uv, lod).rgb; }
+vec3 defBlur(vec2 p, float lod) { vec2 uv = roadUv(p); return outside(uv) ? vec3(0.0) : textureLod(tDef, uv, lod).rgb; }
 // how much of a line's paint is here: its color's strength in the style's line colors (surface.js CONCEPT_LINES) and
 // how much of the texel the line covers; and its hue
 float paintOf(vec4 d) { return min(1.0, max(d.r, max(d.g, d.b))); }
@@ -80,24 +95,11 @@ vec3 lineColor(vec4 d) { float m = max(d.r, max(d.g, d.b)); return m > 0.0 ? d.r
 uniform sampler2D tHeight;
 vec4 hTex(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec4(0.0) : textureLod(tHeight, uv, 0.0); }
 float heightAt(vec2 p) { float f = hTex(p).r, e = egoH(p); return e > 0.0 ? onTop(f, e) : f; }
-// a smoother normal for a big shaded sheet: the baked field's slope over a few of its texels (so its 10 cm steps
-// don't show in the light), our car's over its own finer map where it's on top
 // the field's slope over 30 cm (four reads of the height field), which the surface bakes into the light map once a frame
 // (LIGHT_BAKE) for the styles to read in one (fieldSlope)
 vec2 fieldSlopeMarch(vec2 p) {
   float e = 0.15;
   return vec2(hTex(p + vec2(e, 0.0)).r - hTex(p - vec2(e, 0.0)).r, hTex(p + vec2(0.0, e)).r - hTex(p - vec2(0.0, e)).r) / (2.0 * e);
-}
-vec2 fieldSlope(vec2 p);
-vec3 heightNormalWide(vec2 p) {
-  float f = 0.04;
-  vec2 g = fieldSlope(p);
-  float eh = egoH(p);
-  if (eh > 0.0) {
-    vec2 ge = vec2(egoH(p + vec2(f, 0.0)) - egoH(p - vec2(f, 0.0)), egoH(p + vec2(0.0, f)) - egoH(p - vec2(0.0, f))) / (2.0 * f);
-    g = mix(g, ge, smoothstep(0.0, 0.1, eh) * smoothstep(-0.02, 0.02, eh - hTex(p).r));
-  }
-  return normalize(vec3(-g.x, 1.0, -g.y));
 }
 vec3 heightNormal(vec2 p) {
   float e = 0.06;
@@ -148,10 +150,10 @@ float tailAt(vec2 p) { return hTex(p).g; }
 // the lines' light spread about 30 cm around them, in their colors at their strengths (surface.js, for a profile with
 // a halo): about a line's own color along it, falling away to either side
 uniform sampler2D tGlow;
-vec3 lineHalo(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec3(0.0) : textureLod(tGlow, uv, 0.0).rgb * 5.0; }
+vec3 lineHalo(vec2 p) { vec2 uv = roadUv(p); return outside(uv) ? vec3(0.0) : textureLod(tGlow, uv, 0.0).rgb * 5.0; }
 // ...and their bloom, spread about a metre around them
 uniform sampler2D tBloom;
-vec3 lineBloom(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec3(0.0) : textureLod(tBloom, uv, 0.0).rgb * 16.0; }
+vec3 lineBloom(vec2 p) { vec2 uv = roadUv(p); return outside(uv) ? vec3(0.0) : textureLod(tBloom, uv, 0.0).rgb * 16.0; }
 // how much a car (ours or another) covers the surface here, and the road map with the lines' paint left off the cars
 float carCover(vec2 p) { return smoothstep(0.02, 0.12, hTex(p).b + heightAt(p) - hTex(p).r); }
 vec4 paintAt(vec2 p) { vec4 d = defAt(p); d.rgb *= 1.0 - carCover(p); return d; }
@@ -208,6 +210,18 @@ vec2 fieldSlope(vec2 p) {
   return lightMap(p).ba;
 #endif
 }
+// a smoother normal for a big shaded sheet: the field's slope (baked), our car's over its own finer map where it's on top
+vec3 heightNormalWide(vec2 p) {
+  float f = 0.04;
+  vec2 g = fieldSlope(p);
+  float eh = egoH(p);
+  if (eh > 0.0) {
+    vec2 ge = vec2(egoH(p + vec2(f, 0.0)) - egoH(p - vec2(f, 0.0)), egoH(p + vec2(0.0, f)) - egoH(p - vec2(0.0, f))) / (2.0 * f);
+    g = mix(g, ge, smoothstep(0.0, 0.1, eh) * smoothstep(-0.02, 0.02, eh - hTex(p).r));
+  }
+  return normalize(vec3(-g.x, 1.0, -g.y));
+}
+
 float shadowAt(vec2 p, float h) {
 #ifdef LIGHT_BAKE
   return shadowMarch(p, h);
