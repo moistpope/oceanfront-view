@@ -71,9 +71,16 @@ vec4 hTex(vec2 p) { vec2 uv = defUv(p); return outside(uv) ? vec4(0.0) : texture
 float heightAt(vec2 p) { float f = hTex(p).r, e = egoH(p); return e > 0.0 ? onTop(f, e) : f; }
 // a smoother normal for a big shaded sheet: the baked field's slope over a few of its texels (so its 10 cm steps
 // don't show in the light), our car's over its own finer map where it's on top
+// the field's slope over 30 cm (four reads of the height field), which the surface bakes into the light map once a frame
+// (LIGHT_BAKE) for the styles to read in one (fieldSlope)
+vec2 fieldSlopeMarch(vec2 p) {
+  float e = 0.15;
+  return vec2(hTex(p + vec2(e, 0.0)).r - hTex(p - vec2(e, 0.0)).r, hTex(p + vec2(0.0, e)).r - hTex(p - vec2(0.0, e)).r) / (2.0 * e);
+}
+vec2 fieldSlope(vec2 p);
 vec3 heightNormalWide(vec2 p) {
-  float e = 0.15, f = 0.04;
-  vec2 g = vec2(hTex(p + vec2(e, 0.0)).r - hTex(p - vec2(e, 0.0)).r, hTex(p + vec2(0.0, e)).r - hTex(p - vec2(0.0, e)).r) / (2.0 * e);
+  float f = 0.04;
+  vec2 g = fieldSlope(p);
   float eh = egoH(p);
   if (eh > 0.0) {
     vec2 ge = vec2(egoH(p + vec2(f, 0.0)) - egoH(p - vec2(f, 0.0)), egoH(p + vec2(0.0, f)) - egoH(p - vec2(0.0, f))) / (2.0 * f);
@@ -175,11 +182,19 @@ float aoMarch(vec2 p, float h) {
 #ifndef LIGHT_BAKE
 uniform sampler2D tLight;   // the light map: r the key light's shadow, g the occlusion, over the road map's area
 #endif
-vec2 lightAt(vec2 p) {
+vec4 lightMap(vec2 p) {
 #ifdef LIGHT_BAKE
-  return vec2(1.0);         // (baking it: not read)
+  return vec4(1.0, 1.0, 0.0, 0.0);   // (baking it: not read)
 #else
-  vec2 uv = defUv(p); return outside(uv) ? vec2(1.0) : textureLod(tLight, uv, 0.0).rg;
+  vec2 uv = defUv(p); return outside(uv) ? vec4(1.0, 1.0, 0.0, 0.0) : textureLod(tLight, uv, 0.0);
+#endif
+}
+vec2 lightAt(vec2 p) { return lightMap(p).rg; }
+vec2 fieldSlope(vec2 p) {
+#ifdef LIGHT_BAKE
+  return fieldSlopeMarch(p);
+#else
+  return lightMap(p).ba;
 #endif
 }
 float shadowAt(vec2 p, float h) {

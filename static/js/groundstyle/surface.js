@@ -135,7 +135,7 @@ varying vec2 vUv;
 void main() {
   vec2 p = defGround(vUv);
   float h = heightAt(p);
-  gl_FragColor = vec4(shadowMarch(p, h), aoMarch(p, h), 0.0, 1.0);
+  gl_FragColor = vec4(shadowMarch(p, h), aoMarch(p, h), fieldSlopeMarch(p));   // ba: the field's slope (heightNormalWide)
 }`;
 // the cars' paint and the tint of the ones painted for a reason, over the road map's area (glsl.js vehPaintLoop,
 // vehTintLoop), baked once a frame so no style loops over every car for every pixel or pin
@@ -233,7 +233,7 @@ export class GroundSurface {
     this.heightRT = new THREE.WebGLRenderTarget(512, 1024, { type: THREE.HalfFloatType, depthBuffer: false });
     // the light map over it: the key light's shadow and the creases' occlusion, baked once a frame (glsl.js shadowMarch,
     // aoMarch) at 16 cm, which the styles read instead of marching the height field for every pixel
-    this.lightRT = new THREE.WebGLRenderTarget(LIGHT_W, LIGHT_H, { depthBuffer: false });
+    this.lightRT = new THREE.WebGLRenderTarget(LIGHT_W, LIGHT_H, { depthBuffer: false, type: THREE.HalfFloatType });   // half floats: the slopes in ba
     this.lightRT.texture.minFilter = this.lightRT.texture.magFilter = THREE.LinearFilter;
     // ...and the cars' paint and tint over it, at the light map's 16 cm
     this.carPaintRT = new THREE.WebGLRenderTarget(LIGHT_W, LIGHT_H, { depthBuffer: false });
