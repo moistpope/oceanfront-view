@@ -7,9 +7,11 @@
 export const MAX_VEH = 16;
 export const EGO_B = { x0: -2.8, x1: 2.8, z0: -2.2, z1: 7.0 };   // scene X, Z our car's height map covers (the car is Z 0..4.775)
 export const EGO_RES = 0.01;                                      // m per pixel
-// the road map: scene X, Z, pixels. 8 cm a pixel across the road, 16.5 cm along it: the lines run along the road, so
-// across is where they need it (the car's GPU pays for every pixel of this and the maps baked over it, every frame)
-export const DEF = { x0: -26, x1: 26, z0: -130, z1: 18, w: 640, h: 896 };
+// The road map, and every map baked over it (height, light, the cars), seen in perspective from a camera `height` m up
+// and `back` m behind our car, from `near` m behind it to `far` ahead (scene Z), `side` m either side at the car: fine
+// where it's seen closely (7-8 cm a texel at the car) and coarser with distance as the view itself is (~1 m along, 35
+// cm across, 100 m ahead), so it reaches as far as the view does for the pixels a flat map would spend on 130 m.
+export const DEF = { w: 640, h: 896, height: 20, back: 30, near: 18, far: -300, side: 26 };
 export const LINE_H = 0.08;                                       // m: a crisp painted line over the sheet (pins)
 
 // the light most styles use: ambient, key, how hard the creases darken, specular; and where the key comes from (ahead
@@ -26,14 +28,21 @@ uniform float uDrape;          // m over which a car rises out of the ground
 uniform sampler2D tEgo;        // our car from above: r draped, g exact, b glass
 uniform float uEgoOn, uEgoSharp;
 uniform sampler2D tDef;        // the road from above: rgb its lines' colors, a where there is road
-uniform vec4 uDefB;
+uniform mat4 uDefVP, uDefInv;   // the road map's camera (DEF) and its inverse
 uniform float uLineH;
 uniform mat4 uWorldInv;   // scene -> ground-fixed (scene.js world) coordinates
 const vec4 EGO_B = vec4(${EGO_B.x0}, ${EGO_B.x1}, ${EGO_B.z0}, ${EGO_B.z1});
 float sdBox(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 vec2 vehLocal(int i, vec2 p) { vec2 d = p - uVeh[i].xy; vec4 b = uVehB[i]; return vec2(d.x * b.x - d.y * b.y, d.x * b.y + d.y * b.x); }
 float vehD(int i, vec2 p) { return sdBox(vehLocal(i, p), uVeh[i].zw, min(0.5, uVeh[i].z * 0.6)); }
-vec2 defUv(vec2 p) { return vec2((p.x - uDefB.x) / (uDefB.y - uDefB.x), (uDefB.w - p.y) / (uDefB.w - uDefB.z)); }
+vec2 defUv(vec2 p) { vec4 c = uDefVP * vec4(p.x, 0.0, p.y, 1.0); return c.w > 0.0 ? c.xy / c.w * 0.5 + 0.5 : vec2(-1.0); }
+// the ground point (scene X, Z) a texel of the road map shows: its ray from the camera, to the ground
+vec2 defGround(vec2 uv) {
+  vec2 n = uv * 2.0 - 1.0;
+  vec4 a = uDefInv * vec4(n, -1.0, 1.0), b = uDefInv * vec4(n, 1.0, 1.0);
+  a /= a.w; b /= b.w;
+  return mix(a.xz, b.xz, a.y / (a.y - b.y));
+}
 bool outside(vec2 uv) { return uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0; }
 vec4 egoTex(vec2 p) {
   vec2 uv = vec2((p.x - EGO_B.x) / (EGO_B.y - EGO_B.x), (EGO_B.w - p.y) / (EGO_B.w - EGO_B.z));

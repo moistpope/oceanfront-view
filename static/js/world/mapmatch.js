@@ -8,7 +8,7 @@
 // which road and roughly where along it, never which lane (the camera's lane model keeps that job).
 // Coordinates are the pose estimator's frame: x east, y north in meters, heading counter-clockwise from east.
 
-import { laneLayout } from './roaddetail.js';
+import { laneLayout, singleTrack } from './roaddetail.js';
 
 const DEG = Math.PI / 180;
 const SEARCH_M = 40;              // candidate segments this close to the car
@@ -283,6 +283,8 @@ export class MapMatcher {
     return {
       way: { id: w.id, name: w.name, ref: w.ref, cls: w.cls, className: w.className, lanes: w.lanes, oneWay: w.oneWay,
              layout: laneLayout(w, c.dir),   // the lanes our way and the other, their width and arrows (roaddetail.js)
+             // whether it's painted: a single-track road has no center line, and OSM's lane_markings=no none at all
+             singleTrack: singleTrack(w), markings: w.detail ? w.detail.markings : null,
              maxSpeed: w.maxSpeed || null, maxSpeedForward: w.maxSpeedForward || null, maxSpeedBackward: w.maxSpeedBackward || null },
       dir: c.dir,
       s: r1(s), lateral: r1(c.lateral), distance: r1(c.d), headingDiff: Math.round(c.dh / DEG * 10) / 10,

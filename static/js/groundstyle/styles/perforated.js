@@ -9,7 +9,7 @@ import * as THREE from '../../../vendor/three.module.min.js';
 import { SHEET_FS } from '../sheet.js';
 
 const CELL = 0.085, HOLE_R = 0.3;   // the perforations' pitch (m) and radius (in pitches)
-const FOG = [60, 170];              // m from the camera: the sheet fades into the horizon
+const FOG = [80, 260];              // m from the camera: the sheet fades into the horizon (the road map reaches 300 m)
 // the bar's colors by the time gap to the car we follow (s): green with a long gap, through yellow and orange, red close
 const GAP_COLORS = [[2.2, 0x3ddc6a], [1.5, 0xffd23a], [1.0, 0xff8a1f], [0, 0xff3b30]].map(([s, c]) => [s, new THREE.Color(c)]);
 // the gap bar behind the car we follow: from BAR[0] to BAR[1] m off its back bumper, as wide as the car
@@ -38,13 +38,38 @@ float holeAt(vec2 gc, out vec2 off, out float raw, out float vis) {
   vis = smoothstep(3.0, 6.5, cellPx);
   return mix(3.14159 * uHoleR * uHoleR, raw, vis);
 }
+// the holes seen from above, as a texture's mipmaps would be: where they're under a few pixels apart, the pattern at
+// twice the pitch (and again, up to HOLE_LODS times), blended between levels, so the cloth still reads as perforated far
+// off and at a reduced render scale rather than turning smooth a few metres ahead. The derivatives are taken once here
+// (gc / 2^k's are gc's / 2^k), before anything branches.
+const float HOLE_LODS = 4.0;
+float holeLevel(vec2 gc, float k, float fw, out vec2 off, out float raw) {
+  float sc = exp2(k);
+  vec2 g = gc / sc, f = fract(g) - 0.5; off = f;
+  float dd = length(f), aa = fw / sc * 0.8 + 1e-4;
+  raw = 1.0 - smoothstep(uHoleR - aa, uHoleR + aa, dd);
+  return raw;
+}
+float holeTop(vec2 gc, out vec2 off, out float raw, out float vis) {
+  float fw = max(max(fwidth(gc.x), fwidth(gc.y)), 1e-5);
+  float k = clamp(log2(6.0 * fw), 0.0, HOLE_LODS), k0 = floor(k), t = smoothstep(0.6, 1.0, k - k0);
+  vec2 oa, ob; float ra, rb;
+  holeLevel(gc, k0, fw, oa, ra);
+  holeLevel(gc, k0 + 1.0, fw, ob, rb);
+  off = t < 0.5 ? oa : ob;
+  // the coarser levels lighter: far off the holes are a texture, not the near ones' bold pattern
+  raw = mix(ra, rb, t) * (1.0 - 0.14 * k);
+  // past the coarsest level, their average
+  vis = smoothstep(3.0, 6.5, exp2(HOLE_LODS) / fw);
+  return mix(3.14159 * uHoleR * uHoleR, raw, vis);
+}
 void main() {
   vec2 p = vPos.xz;
   float h = vPos.y + uDrop + 0.01;
   // the holes first (their anti-aliasing takes derivatives, so before anything branches): seen from above and from
   // both ground-fixed sides
   vec2 o0, o1, o2; float r0, r1, r2, v0, v1, v2;
-  float hT = holeAt(vWorld / uCell, o0, r0, v0), hA = holeAt(vec2(vWorld.y, vPos.y) / uCell, o1, r1, v1), hB = holeAt(vec2(vWorld.x, vPos.y) / uCell, o2, r2, v2);
+  float hT = holeTop(vWorld / uCell, o0, r0, v0), hA = holeAt(vec2(vWorld.y, vPos.y) / uCell, o1, r1, v1), hB = holeAt(vec2(vWorld.x, vPos.y) / uCell, o2, r2, v2);
   bool up = h > 0.004;
   vec3 n = up ? heightNormalWide(p) : vec3(0.0, 1.0, 0.0);
   vec3 V = normalize(cameraPosition - vPos);

@@ -72,7 +72,7 @@ vec3 sheetFog(vec3 c, float near, float far) {
 // the tail lights where the sheet is raised, then the fog from fog m out
 vec3 sheetFinish(vec3 c, vec2 p, bool up, float fog) {
   if (up) c += uTail * (tailAt(p) + egoBar(p)) * 1.2;
-  return sheetFog(c, fog, 190.0);
+  return sheetFog(c, fog, 260.0);
 }`;
 
 // A sheet shaded by `fragmentShader` (which starts with SHEET_FS), with the style's own uniforms besides the shared ones.

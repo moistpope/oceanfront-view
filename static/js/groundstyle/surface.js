@@ -133,7 +133,7 @@ const LIGHT_FS = `
 ${STYLE_GLSL}
 varying vec2 vUv;
 void main() {
-  vec2 p = vec2(mix(uDefB.x, uDefB.y, vUv.x), mix(uDefB.w, uDefB.z, vUv.y));
+  vec2 p = defGround(vUv);
   float h = heightAt(p);
   gl_FragColor = vec4(shadowMarch(p, h), aoMarch(p, h), 0.0, 1.0);
 }`;
@@ -143,7 +143,7 @@ const CAR_FS = `
 ${SURFACE_GLSL}
 varying vec2 vUv;
 void main() {
-  vec2 p = vec2(mix(uDefB.x, uDefB.y, vUv.x), mix(uDefB.w, uDefB.z, vUv.y));
+  vec2 p = defGround(vUv);
 #ifdef TINT
   gl_FragColor = vehTintLoop(p);
 #else
@@ -156,7 +156,7 @@ ${SURFACE_GLSL}
 ${BAKE_GLSL}
 varying vec2 vUv;
 void main() {
-  vec2 p = vec2(mix(uDefB.x, uDefB.y, vUv.x), mix(uDefB.w, uDefB.z, vUv.y));
+  vec2 p = defGround(vUv);
   float f = baseAt(p), h = withCars(p, f);
   gl_FragColor = vec4(h, tailBake(p), h - f, 1.0);   // b: how much the cars raise it
 }`;
@@ -199,11 +199,16 @@ export class GroundSurface {
     // the road map (anti-aliased, with mipmaps), and the camera that renders it
     const mips = { generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, samples: 4 };
     this.defRT = new THREE.WebGLRenderTarget(DEF.w, DEF.h, { depthBuffer: true, ...mips });
-    this.defCam = new THREE.OrthographicCamera(DEF.x0, DEF.x1, (DEF.z1 - DEF.z0) / 2, -(DEF.z1 - DEF.z0) / 2, 1, 100);
-    this.defCam.position.set(0, 50, (DEF.z0 + DEF.z1) / 2);
-    this.defCam.up.set(0, 0, -1);
-    this.defCam.lookAt(0, 0, (DEF.z0 + DEF.z1) / 2);
+    // in perspective (glsl.js DEF): pitched down so its frame runs from DEF.near behind our car to DEF.far ahead, and
+    // wide enough for DEF.side either side at the car
+    const below = (dz) => Math.atan2(DEF.height, DEF.back - dz);   // how far below the horizon a point on the ground at Z is
+    const aNear = below(DEF.near), aFar = below(DEF.far), pitch = (aNear + aFar) / 2, fov = aNear - aFar;
+    const depth = DEF.height * Math.sin(pitch) + DEF.back * Math.cos(pitch);   // our car along its axis
+    this.defCam = new THREE.PerspectiveCamera(fov * 180 / Math.PI, (DEF.side / depth) / Math.tan(fov / 2), 1, 1000);
+    this.defCam.position.set(0, DEF.height, DEF.back);
+    this.defCam.rotation.set(-pitch, 0, 0);
     this.defCam.updateMatrixWorld();
+    this.defVP = new THREE.Matrix4().multiplyMatrices(this.defCam.projectionMatrix, this.defCam.matrixWorldInverse);
     this.defCam.layers.set(1);
     // the road's lines alone, in white (layer 2)
     this.covRT = new THREE.WebGLRenderTarget(DEF.w, DEF.h, { depthBuffer: false, samples: 4 });
@@ -211,8 +216,9 @@ export class GroundSurface {
     this.covCam = this.defCam.clone();
     this.covCam.layers.set(2);
     // the lines' colors spread about 30 cm, at half the road map's resolution in half floats, for their halo
-    const BW = DEF.w / 2, BH = DEF.h / 2, texel = (DEF.x1 - DEF.x0) / BW;
-    const across = texel / ((DEF.z1 - DEF.z0) / BH);   // the blur's steps along the road in its (longer) texels, so it spreads as far both ways
+    // (in the map's texels: about square at the car, and growing with distance as the view's own pixels do, so the glow
+    // spreads alike on screen near and far)
+    const BW = DEF.w / 2, BH = DEF.h / 2, texel = 2 * DEF.side / BW, across = 1;
     const half = () => new THREE.WebGLRenderTarget(BW, BH, { type: THREE.HalfFloatType, depthBuffer: false });
     this.glowRT = [half(), half()];
     // ...and spread again, about a metre, for their bloom
@@ -241,7 +247,7 @@ export class GroundSurface {
       tDef: { value: this.defRT.texture }, tHeight: { value: this.heightRT.texture }, tCov: { value: this.covRT.texture },
       tLight: { value: this.lightRT.texture }, tCarPaint: { value: this.carPaintRT.texture }, tCarTint: { value: this.carTintRT.texture },
       tGlow: { value: this.glowRT[1].texture }, tBloom: { value: this.bloomRT[1].texture }, uDark: { value: 0 },
-      uDefB: { value: new THREE.Vector4(DEF.x0, DEF.x1, DEF.z0, DEF.z1) }, uLineH: { value: LINE_H }, uCrisp: { value: 0 },
+      uDefVP: { value: this.defVP }, uDefInv: { value: this.defVP.clone().invert() }, uLineH: { value: LINE_H }, uCrisp: { value: 0 },
       uRidgeD: { value: Array.from({ length: RIDGE_MAX }, () => new THREE.Vector2()) }, uRidgeS: { value: new Float32Array(RIDGE_MAX).fill(0.5) },
       uRidgeN: { value: 0 }, uRidgeH: { value: DEFAULT_PROFILE.ridge }, uWorldInv: { value: new THREE.Matrix4() },
       uLook: { value: new THREE.Vector4(...BASE_LIGHT.look) }, uKey: { value: new THREE.Vector3(...BASE_LIGHT.key).normalize() },
@@ -332,7 +338,7 @@ export class GroundSurface {
     if (ref) {
       if (ref.reveal > 0) {
         for (const l of ref.structure) {
-          if (l.kind === 'edge') { out.push([l.d, RIDGE.edge]); edges++; } else out.push([l.d, l.ego ? RIDGE.ego : RIDGE.other]);
+          if (l.kind === 'edge') { out.push([l.d, RIDGE.edge]); edges++; } else if (ref.painted !== false) out.push([l.d, l.ego ? RIDGE.ego : RIDGE.other]);
         }
       }
     } else if (road && road.surface.reveal > 0.001) {

@@ -838,6 +838,9 @@ export class CarScene {
         if (l.kind !== 'edge' && (l.ego === 'L1' || l.ego === 'R1')) this.egoLinePts[l.ego] = pts;
         const key = keyOf(l.ego, l.kind === 'center' ? 'yellow' : 'white', false);
         if (key !== 'lineBlue' && key !== 'lineRed' && this.groundStyle.style === 'flat') continue;
+        // a line the road doesn't have painted isn't drawn (unless the HMI is coloring it): the ground styles otherwise
+        // drew our lane's lines on roads with none (a single-track road's center)
+        if (l.kind !== 'edge' && ref.painted === false && key !== 'lineBlue' && key !== 'lineRed') continue;
         this._styled(pieces, key, l.kind === 'center' ? 7 : 1, cut(pts, l.d), phase);
       }
     }
