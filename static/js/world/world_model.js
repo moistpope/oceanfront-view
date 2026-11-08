@@ -294,6 +294,7 @@ const RANK_SRC = { 0: 'adas', 1: 'radar', 2: 'op' };
 // how sure a source's heading is (rad, 1 sigma); only used while an object is slow, where its motion can't tell
 const HEADING_SIGMA = { adas: 0.35, radar: 0.25, op: 0.6 };
 const HEADING_MEAS_MAX_V = 3.0;   // m/s: faster, the heading is the motion's
+const SIGHT_TAU_S = 1.0;          // s: how slowly the heading the line of sight is judged by follows the estimate's
 const LANE_SIGMA = 0.3;          // rad: how far a new moving object's heading may be from the lane's (along ours, or against)
 const EGO_W = 1.98, EGO_L = 4.775; // m: our footprint (the rear axle 0.925 m from the back)
 
@@ -355,6 +356,7 @@ class Track {
     const dt = t - this.t;
     if (dt === 0) return;
     this.f.predict(dt);   // backward too (a late measurement), as the constant-velocity filter did
+    this.easeSight(dt);
     this.t = t;
   }
 
@@ -362,10 +364,19 @@ class Track {
    *  (a radar point target: a sign, a post, or a car the radar sees as a point), so its center is the point seen. */
   get sight() { return this.f.cls === 'unknown' && !this.f.dims ? [0, 0] : this.f.footprint; }
 
-  /** Where a face seen from o puts this object's center, by its own heading and size. */
+  /** Where a face seen from o puts this object's center, by its size and a slowly eased copy of its heading: with
+   *  its heading as estimated now, a heading error would move the face it's taken to show (end to side), which moves
+   *  the center sideways, which turns the estimate further, and the estimate weaves (a car followed at a walk). */
   centerFor(z, o) {
     const [w, l] = this.sight;
-    return centerOf(z[0], z[1], o[0], o[1], w, l, this.f.X[2]);
+    if (this.sightPsi === undefined) this.sightPsi = this.f.X[2];
+    return centerOf(z[0], z[1], o[0], o[1], w, l, this.sightPsi);
+  }
+
+  /** Ease the heading the line of sight is judged by toward the estimate's (SIGHT_TAU_S). */
+  easeSight(dt) {
+    if (this.sightPsi === undefined) { this.sightPsi = this.f.X[2]; return; }
+    if (dt > 0) this.sightPsi = this.sightPsi + wrap(this.f.X[2] - this.sightPsi) * Math.min(1, dt / SIGHT_TAU_S);
   }
 
   maha(z, o, Rp) {

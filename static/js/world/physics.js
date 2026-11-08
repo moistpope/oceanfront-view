@@ -106,8 +106,8 @@ function processNoise(X, dt, walks) {
   }
   if (walks) Q[2][2] += SIGMA_WALK_TURN ** 2 * dt;
   else {
-    // lateral jerk j turns into curvature at j / v^2 (slow, the curvature is free to change; v^2 floors at 4)
-    const sk = SIGMA_LAT_JERK / Math.max(v * v, 4);
+    // lateral jerk j turns into curvature at j / v^2
+    const sk = SIGMA_LAT_JERK / Math.max(v * v, 25);   // floored at 5 m/s: slower, a little sideways noise mustn't swing it about
     Q[5][5] += sk * sk * dt;
     Q[2][2] += 1e-4 * dt;   // the model's small heading misfit
   }
