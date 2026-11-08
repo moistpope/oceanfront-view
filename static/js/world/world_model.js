@@ -344,7 +344,7 @@ class Track {
   predict(t) {
     const dt = t - this.t;
     if (dt === 0) return;
-    if (dt > 0) this.f.predict(dt);
+    this.f.predict(dt);   // backward too (a late measurement), as the constant-velocity filter did
     this.t = t;
   }
 
@@ -514,11 +514,12 @@ export class WorldModel {
       if (tid === undefined) {
         if (m.src === 'op' && (m.info.modelProb ?? 1.0) < OP_MIN_PROB) return;
         tid = this.nextId++;
-        // which way it faces: as a source says, else as it moves, else (most of what's around us) as we do, though
+        // which way it faces: as it moves (a measured velocity), else as a source says, else (most of what's around us)
+        // as we do, though
         // loosely: an oncoming car turns itself round once it's seen to move toward us (PhysFilter.settle)
         let psi0 = pose[2], sPsi0 = 1.2;
-        if (m.heading !== null) { psi0 = pose[2] + m.heading * Math.PI / 180; sPsi0 = HEADING_SIGMA[m.src] ?? 0.5; }
-        else if (v !== null && hypot(v[0], v[1]) > HEADING_FROM_MOTION) { psi0 = Math.atan2(v[1], v[0]); sPsi0 = 0.3; }
+        if (v !== null && hypot(v[0], v[1]) > HEADING_FROM_MOTION) { psi0 = Math.atan2(v[1], v[0]); sPsi0 = 0.3; }
+        else if (m.heading !== null) { psi0 = pose[2] + m.heading * Math.PI / 180; sPsi0 = HEADING_SIGMA[m.src] ?? 0.5; }
         this.tracks.set(tid, new Track(tid, t, z, o, Rp, v, Rv, m, psi0, sPsi0, vEgo));
         innovation = [0, 0];
       } else {

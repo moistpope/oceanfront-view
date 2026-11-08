@@ -146,7 +146,16 @@ export class PhysFilter {
   }
 
   predict(dt) {
-    if (dt <= 0) return;
+    if (dt === 0) return;
+    if (dt < 0) {
+      // back in time (a measurement older than the time it's been predicted to, as a late camera report is): the
+      // same motion run backward, without its limits or noise, so the measurement meets the state it was taken of
+      const F = jacobian((S) => propagate(S, dt, this.walks, false), this.X);
+      this.X = propagate(this.X, dt, this.walks, false);
+      this.P = matmul(matmul(F, this.P), transpose(F));
+      this.bound();
+      return;
+    }
     // a long gap is stepped through, so the curvature and the limits act along the way
     const steps = Math.max(1, Math.ceil(dt / 0.1));
     const h = dt / steps;
@@ -268,7 +277,10 @@ const SETTLED_SV = 3.0;     // m/s: the speed's sigma below which the estimate's
 const SNAP_M = 6.0;          // farther than this from its estimate, or than SNAP_S of its travel, it's put there
 const SNAP_S = 0.4;          // (a new object, a re-association)
 const SNAP_TURN_S = 1.5;     // standing this long facing more than SNAP_TURN away from its estimate, it's turned
-const SNAP_TURN = 0.6;       // (a standing car's heading only becomes known once a sensor says which way it faces)
+const SNAP_TURN = 0.6;         // (a standing car's heading only becomes known once a sensor says which way it faces)
+const STILL_V = 0.5;           // m/s: slower than this, estimate and body both, it's standing...
+const STILL_DEADBAND = 0.35;   // ...and moves only to an estimate this far off along it (m)...
+const CREEP_V = 1.0;           // ...at this pace (m/s)
 
 /** A road user as it's drawn: a kinematic bicycle driven by steering and throttle under its class's limits toward
  *  its filter's estimate, so what's seen moves like a vehicle, whatever the sensors' noise does to the estimate.
@@ -319,8 +331,15 @@ export class SimBody {
     } else this.misaligned = 0;
     // speed: the estimate's, plus what closes the gap along our heading (reversing only as the estimate does)
     const along = ex * c + ey * s;
-    let want = T[3] * Math.cos(wrap(T[2] - X[2])) + GAP_GAIN * along;
-    want = clamp(want, T[3] < -0.3 ? -L.reverse : 0, L.vMax);
+    let want;
+    if (Math.abs(T[3]) < STILL_V && Math.abs(X[3]) < STILL_V) {
+      // standing: its estimate's noise isn't motion. It stays put unless the estimate is clearly elsewhere along it,
+      // then rolls there (either way: a stopped car can roll back a little) at walking pace
+      want = Math.abs(along) < STILL_DEADBAND ? 0 : clamp(GAP_GAIN * (along - Math.sign(along) * STILL_DEADBAND), -Math.min(CREEP_V, L.reverse || CREEP_V), CREEP_V);
+    } else {
+      want = T[3] * Math.cos(wrap(T[2] - X[2])) + GAP_GAIN * along;
+      want = clamp(want, T[3] < -0.3 ? -L.reverse : 0, L.vMax);
+    }
     const v = X[3], av = Math.abs(v);
     const push = Math.min(L.accel, L.power / (massOf(this.cls, this.dims) * Math.max(av, 1)), L.latMax);
     const a = clamp((want - v) / SPEED_TAU, v >= 0 ? -L.brake : -push, v >= 0 ? push : L.brake);
