@@ -296,7 +296,10 @@ const HEADING_MEAS_MAX_V = 3.0;   // m/s: faster, the heading is the motion's
 const EGO_W = 1.98, EGO_L = 4.775; // m: our footprint (the rear axle 0.925 m from the back)
 
 /** A measured class as the physical model knows it. */
-const physClass = (cls) => (cls && limitsOf(cls) !== limitsOf('unknown') ? cls : 'unknown');
+const physClass = (cls, rank = 0) => {
+  if (!cls || limitsOf(cls) === limitsOf('unknown')) return 'unknown';
+  return limitsOf(cls).walks && rank !== SOURCE_RANK.adas ? 'unknown' : cls;
+};
 
 class Track {
   /** z: the face a sensor at o saw (world); Rp its noise; v, Rv: a measured velocity over ground (or null);
@@ -304,7 +307,7 @@ class Track {
   constructor(tid, t, z, o, Rp, v, Rv, m, psi0, sPsi0, vEgo) {
     this.id = tid;
     this.t = t;
-    const cls = physClass(m.cls);
+    const cls = physClass(m.cls, SOURCE_RANK[m.src]);
     const [w, l] = cls === 'unknown' && !m.dims ? [0, 0] : footprintOf(cls, m.dims);
     const c = centerOf(z[0], z[1], o[0], o[1], w, l, psi0);
     let v0 = vEgo, sV = Math.max(6, 0.6 * Math.abs(vEgo));
@@ -555,8 +558,10 @@ export class WorldModel {
       tr.updateHeading(h + m.heading * Math.PI / 180, m.src);
       tr.headingRank = rank;
     }
-    // the physical model follows the class and size (they set its limits and its footprint)
-    tr.f.cls = physClass(tr.cls);
+    // the physical model follows the class and size (they set its limits and its footprint); a walker only on a
+    // camera's word: the radar's pedestrians are mostly roadside clutter, and a walker's free heading would let
+    // its noisy sideways velocity read as walking
+    tr.f.cls = physClass(tr.cls, tr.clsRank);
     tr.f.dims = tr.dims;
     if (!tr.confirmed) {
       if (m.src === 'op') {   // alone, only once it has held for a second with neither the radar nor the ADAS around
@@ -617,7 +622,7 @@ export class WorldModel {
           keep.cls = drop.cls; keep.clsRank = drop.clsRank; keep.dims = drop.dims || keep.dims;
         }
         if (drop.headingRank < keep.headingRank) keep.headingRank = drop.headingRank;
-        keep.f.cls = physClass(keep.cls);
+        keep.f.cls = physClass(keep.cls, keep.clsRank);
         keep.f.dims = keep.dims;
         if (drop.visionT !== null && (keep.visionT === null || drop.visionT > keep.visionT)) keep.visionT = drop.visionT;
         keep.thin = Math.max(keep.thin, drop.thin);
@@ -695,7 +700,9 @@ export class WorldModel {
 
     for (const [tid, tr] of this.tracks) {
       const dt = t - tr.confT;
-      const standing = tr.speed() <= moving;
+      // standing unless it's surely moving: its speed less 1.5 sigma (a walker's heading is free, so the radar's noisy
+      // sideways velocity can read as walking; an object counts as moving once that can't explain it)
+      const standing = Math.max(0, tr.speed() - 1.5 * Math.sqrt(tr.f.P[3][3])) <= moving;
       if (dt > 0 && standing && looking && ahead.has(tid) && ahead.get(tid) < blocker + 2.0 && !seen.get(tid) && tr.cls !== 'pedestrian') tr.unseenS += dt;
       let target, why;
       if (tr.visionT !== null) {
@@ -742,7 +749,7 @@ export class WorldModel {
       tr.bodyT = now;
     }
     const back = FRONT_TO_REAR_AXLE - EGO_L / 2;
-    separate(shown.map(tr => ({ f: tr.body, id: tr.id })), [pose[0] + back * Math.cos(h), pose[1] + back * Math.sin(h), EGO_W, EGO_L, h]);
+    separate(shown.map(tr => ({ f: tr.body, id: tr.id })), [pose[0] + back * Math.cos(h), pose[1] + back * Math.sin(h), EGO_W, EGO_L, h], 3, null, false);
     for (const tr of shown) {
       const S = tr.body.X;
       const [w, l] = tr.f.footprint;

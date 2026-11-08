@@ -426,8 +426,9 @@ const SAME_DV = 3.0;        // ...and moving alike within this (m/s): one object
  *  is { f: PhysFilter, id }. Two that overlap are one object seen twice (returned as [idA, idB] for the caller to
  *  merge) when they overlap much and move alike, or when `distinct(idA, idB)` (given) says nothing tells them apart
  *  (the radar often reports one car as two tracks); otherwise they're pushed apart, the less certain moving more
- *  (all of it, against our car). */
-export function separate(tracks, ego = null, iterations = 3, distinct = null) {
+ *  (all of it, against our car). With `mergeable` false (the drawn bodies, which nothing merges) every overlap is
+ *  pushed apart. */
+export function separate(tracks, ego = null, iterations = 3, distinct = null, mergeable = true) {
   const solid = tracks.filter(t => SOLID.has(t.f.cls) || (t.f.cls === 'unknown' && t.f.dims));
   const same = [];
   const box = (f) => { const [w, l] = f.footprint; return [f.X[0], f.X[1], w, l, f.X[2]]; };
@@ -446,7 +447,7 @@ export function separate(tracks, ego = null, iterations = 3, distinct = null) {
         if (!o) continue;
         const va = A.vel, vb = B.vel;
         const alike = Math.hypot(va[0] - vb[0], va[1] - vb[1]) < SAME_DV;
-        if (it === 0 && ((o.share >= SAME_SHARE && alike) || (distinct && !distinct(solid[i].id, solid[j].id) && Math.hypot(va[0] - vb[0], va[1] - vb[1]) < 2 * SAME_DV))) {
+        if (mergeable && it === 0 && ((o.share >= SAME_SHARE && alike) || (distinct && !distinct(solid[i].id, solid[j].id) && Math.hypot(va[0] - vb[0], va[1] - vb[1]) < 2 * SAME_DV))) {
           same.push([solid[i].id, solid[j].id]);
           continue;
         }
