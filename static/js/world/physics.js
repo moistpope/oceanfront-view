@@ -65,6 +65,7 @@ const SIGMA_POS = 0.15;    // m/sqrt(s): what the model misses (a lane change's 
 const SIGMA_WALK_TURN = 2.0;   // rad/sqrt(s): how freely a pedestrian turns
 const REACQ_S = 1.0;       // s of measured positions observe() fits a motion to...
 const REACQ_MIN_V = 1.5;   // ...which, moving at least this fast (m/s)...
+const REACQ_STUCK_V = 2.0; // ...for an estimate slower than this (m/s)...
 const REACQ_DV = 4.0;      // ...and this far from the estimate's velocity (m/s), replaces its heading and speed
 // the most each state's variance may grow to: position 30 m, heading pi, speed 30 m/s, acceleration 10 m/s^2,
 // curvature 0.5 /m (1 sigma)
@@ -245,7 +246,9 @@ export class PhysFilter {
     if (stt <= 0) return;
     const ux = sx / stt, uy = sy / stt, us = Math.hypot(ux, uy);
     const [vx, vy] = this.vel;
-    if (us < REACQ_MIN_V || Math.hypot(ux - vx, uy - vy) < REACQ_DV) return;
+    // only an estimate stuck near standing: a moving one's heading is observable, and noisy points (radar returns
+    // hopping along a truck) would otherwise fake a mismatch
+    if (Math.abs(this.X[3]) > REACQ_STUCK_V || us < REACQ_MIN_V || Math.hypot(ux - vx, uy - vy) < REACQ_DV) return;
     this.X[2] = Math.atan2(uy, ux);
     this.X[3] = Math.min(us, limitsOf(this.cls).vMax);
     this.X[4] = 0; this.X[5] = 0;
@@ -359,9 +362,12 @@ export class SimBody {
     // and turns toward the estimate's heading gently: it never drifts off along a wrong heading, and is never left
     // facing the wrong way to snap round later
     if (Math.abs(T[3]) < SLOW_V && Math.abs(X[3]) < SLOW_V) {
+      // its pace: what closes the gap, reached within its class's acceleration and braking (no jump to a walk)
       const reach = err - STILL_DEADBAND;
-      if (reach > 0) {
-        const step = Math.min(reach, Math.max(CREEP_V, Math.abs(T[3]) + GAP_GAIN * reach) * dt);
+      const wantV = reach > 0 ? Math.max(CREEP_V, Math.abs(T[3]) + GAP_GAIN * reach) : 0;
+      this.slowV = (this.slowV ?? Math.abs(X[3])) + clamp(wantV - (this.slowV ?? Math.abs(X[3])), -L.brake * dt, Math.min(L.accel, 2.0) * dt);
+      if (reach > 0 && this.slowV > 0) {
+        const step = Math.min(reach, this.slowV * dt);
         X[0] += ex / err * step; X[1] += ey / err * step;
       }
       X[3] = Math.abs(T[3]) > 0.3 ? T[3] : 0;
@@ -370,6 +376,7 @@ export class SimBody {
       if (Math.abs(dh) > HEADING_DEADBAND) X[2] = wrap(X[2] + clamp(dh, -SLOW_TURN * dt, SLOW_TURN * dt));
       return;
     }
+    this.slowV = undefined;
     // speed: the estimate's, plus what closes the gap along our heading (reversing only as the estimate does)
     const along = ex * c + ey * s;
     let want = T[3] * Math.cos(wrap(T[2] - X[2])) + GAP_GAIN * along;

@@ -380,12 +380,11 @@ class Track {
     const before = this.f.reacq;
     if (t !== undefined) this.f.observe(t, z[0], z[1]);   // the points as measured: a center moves with the heading guess
     if (this.f.reacq !== before) {
-      // its motion taken afresh: it's where this measurement puts it (by its new heading), and drawn there too
+      // its motion taken afresh: it's where this measurement puts it (by its new heading)
       const c2 = this.centerFor(z, o);
       this.f.X[0] = c2[0]; this.f.X[1] = c2[1];
       for (let i = 0; i < 2; i++) for (let j = 0; j < 6; j++) { this.f.P[i][j] = this.f.P[j][i] = 0; }
       this.f.P[0][0] = Rp[0][0]; this.f.P[0][1] = this.f.P[1][0] = Rp[0][1]; this.f.P[1][1] = Rp[1][1];
-      this.body = null;
     }
     if (v !== null) this.f.updateVel(v, Rv);
     this.f.settle();
