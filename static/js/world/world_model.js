@@ -78,7 +78,8 @@ const STATIONARY_SPEED = 0.7;      // m/s over ground
 const CONFIRM_UPDATES = 3;         // a radar-only track is shown after this many measurements...
 const CONFIRM_SPAN_S = 0.15;       // ...spanning at least this long
 const HEADING_FROM_MOTION = 1.5;   // m/s: faster than this, an object points where it's going
-const SOURCE_GONE_S = 5.0;         // a source silent this long no longer counts as available
+const SOURCE_GONE_S = 5.0;
+const CONF_SHOWN = 0.35;           // the view draws objects from about this confidence (scene.js CONF_HIDE)         // a source silent this long no longer counts as available
 
 // confidence (see above); the view fades objects in between about 0.35 and 0.65
 const VISION_CLASSES = new Set(['car', 'truck', 'motorcycle', 'bicycle', 'pedestrian', 'animal']);
@@ -375,6 +376,16 @@ class Track {
   }
 }
 
+/** Of two tracks that are one object, the one to keep: the one the view shows (confirmed, and sure enough to draw),
+ *  then a confirmed one, then the older, so the
+ *  object keeps its id (a new id is a new object to the view: the old one fades out and this one in). */
+function older(A, B) {
+  const shown = (T) => T.confirmed && T.conf >= CONF_SHOWN;
+  if (shown(A) !== shown(B)) return shown(A) ? [A, B] : [B, A];
+  if (A.confirmed !== B.confirmed) return A.confirmed ? [A, B] : [B, A];
+  return A.first <= B.first ? [A, B] : [B, A];
+}
+
 /** Both fed by the same radar or ADAS track id within SAME_ID_S (openpilot's lead index isn't an identity). */
 function sameSourceId(a, b) {
   for (const src in a.sources) {
@@ -580,14 +591,14 @@ export class WorldModel {
           if (hypot(d[0], d[1]) > SAME_ID_M) continue;
           [keep, drop] = A.lastT >= B.lastT ? [A, B] : [B, A];
         } else if (overlaps) {
-          [keep, drop] = A.n >= B.n ? [A, B] : [B, A];
+          [keep, drop] = older(A, B);
         } else {
           if (hypot(d[0], d[1]) > MERGE_M || quad2(matadd(block(A.f.P, 0, 2, 0, 2), block(B.f.P, 0, 2, 0, 2)), d) > MERGE_GATE) continue;
           // a new track's velocity is barely known (the radar's lateral velocity especially), so speeds
           // only have to agree within what the two estimates allow
           const dv = [A.vel[0] - B.vel[0], A.vel[1] - B.vel[1]];
           if (hypot(dv[0], dv[1]) > MERGE_V && quad2(matadd(A.f.velCov(), B.f.velCov()), dv) > MERGE_GATE_V) continue;
-          [keep, drop] = A.n >= B.n ? [A, B] : [B, A];
+          [keep, drop] = older(A, B);
         }
         for (const src in drop.sources) {
           const s = drop.sources[src];
@@ -626,7 +637,18 @@ export class WorldModel {
     const pose = this.odo.pose(t);
     const back = FRONT_TO_REAR_AXLE - EGO_L / 2;   // our footprint's center, ahead of the rear axle
     const ego = [pose[0] + back * Math.cos(pose[2]), pose[1] + back * Math.sin(pose[2]), EGO_W, EGO_L, pose[2]];
-    const same = separate([...this.tracks.values()].map(tr => ({ f: tr.f, id: tr.id })), ego);
+    // two tracks are surely two objects only when a camera has told them apart: the ADAS list, or openpilot's two
+    // leads, each seeing one of them now. Otherwise overlapping tracks are one object the radar split in two
+    const seenAs = (tr, src) => (tr.sources[src] && t - tr.sources[src].t < 0.5 ? tr.sources[src].id : null);
+    const distinct = (a, b) => {
+      const A = this.tracks.get(a), B = this.tracks.get(b);
+      for (const src of ['adas', 'op']) {
+        const ia = seenAs(A, src), ib = seenAs(B, src);
+        if (ia !== null && ib !== null && ia !== ib) return true;
+      }
+      return false;
+    };
+    const same = separate([...this.tracks.values()].map(tr => ({ f: tr.f, id: tr.id })), ego, 3, distinct);
     if (same.length) this._merge(same);
   }
 

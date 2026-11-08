@@ -63,19 +63,24 @@ const SIGMA_JERK = 2.5;    // m/s^3: how fast acceleration changes (process nois
 const SIGMA_LAT_JERK = 3.0;   // m/s^3: how fast lateral acceleration (v^2 k) changes, which sets the curvature's noise
 const SIGMA_POS = 0.15;    // m/sqrt(s): what the model misses (a lane change's start, potholes, the sensors' sway)
 const SIGMA_WALK_TURN = 2.0;   // rad/sqrt(s): how freely a pedestrian turns
+// the most each state's variance may grow to: position 30 m, heading pi, speed 30 m/s, acceleration 10 m/s^2,
+// curvature 0.5 /m (1 sigma)
+const MAX_VAR = [900, 900, Math.PI ** 2, 900, 100, 0.25];
 
-/** The state dt later. Exact for constant a and k over dt (to first order in the heading change). */
-export function propagate(X, dt, walks = false) {
+/** The state dt later. Exact for constant a and k over dt (to first order in the heading change). With `stops`,
+ *  speed doesn't pass through zero by accelerating: braking stops a car, it doesn't reverse it. That makes the model
+ *  jump at zero speed, so its Jacobian is taken without it (a finite difference across the jump is huge, and
+ *  blows the covariance up). */
+export function propagate(X, dt, walks = false, stops = true) {
   const [x, y, psi, v, a, k] = X;
   let ds = v * dt + 0.5 * a * dt * dt;
   let v1 = v + a * dt;
-  // speed doesn't pass through zero by accelerating: braking stops a car, it doesn't reverse it
-  if (v > 0 && v1 < 0) { const ts = -v / a; ds = v * ts / 2; v1 = 0; }
-  else if (v < 0 && v1 > 0) { const ts = -v / a; ds = v * ts / 2; v1 = 0; }
+  if (stops && v > 0 && v1 < 0) { const ts = -v / a; ds = v * ts / 2; v1 = 0; }
+  else if (stops && v < 0 && v1 > 0) { const ts = -v / a; ds = v * ts / 2; v1 = 0; }
   const dpsi = walks ? 0 : k * ds;
   const hm = psi + dpsi / 2;
   const ea = Math.exp(-dt / TAU_A), ek = Math.exp(-dt / TAU_K);
-  return [x + ds * Math.cos(hm), y + ds * Math.sin(hm), psi + dpsi, v1, v1 === 0 ? 0 : a * ea, k * ek];
+  return [x + ds * Math.cos(hm), y + ds * Math.sin(hm), psi + dpsi, v1, stops && v1 === 0 ? 0 : a * ea, k * ek];
 }
 
 /** Process noise for dt, in the state's own terms (position noise along and across the heading). */
@@ -146,9 +151,10 @@ export class PhysFilter {
     const steps = Math.max(1, Math.ceil(dt / 0.1));
     const h = dt / steps;
     for (let i = 0; i < steps; i++) {
-      const F = jacobian((S) => propagate(S, h, this.walks), this.X);
+      const F = jacobian((S) => propagate(S, h, this.walks, false), this.X);
       this.X = propagate(this.X, h, this.walks);
       this.P = matadd(matmul(matmul(F, this.P), transpose(F)), processNoise(this.X, h, this.walks));
+      this.bound();
       this.limit();
     }
   }
@@ -175,6 +181,7 @@ export class PhysFilter {
     const IKH = sub(eye(6), matmul(K, H));
     this.P = matadd(matmul(matmul(IKH, this.P), transpose(IKH)), matmul(matmul(K, R), transpose(K)));
     this.X[2] = wrap(this.X[2]);
+    this.bound();
     this.limit();
   }
 
@@ -214,6 +221,20 @@ export class PhysFilter {
   settle() {
     const L = limitsOf(this.cls);
     if (this.X[3] < -Math.max(L.reverse, 1.0) - 0.5 && Math.sqrt(this.P[2][2]) > 0.3) this.turnAround();
+  }
+
+  /** Keep the covariance symmetric and its variances within what's physically meaningful: no estimate is less
+   *  sure than "anywhere a road user could be going", however long it coasts (a guard, not a tuning). */
+  bound() {
+    const P = this.P;
+    for (let i = 0; i < 6; i++) for (let j = i + 1; j < 6; j++) P[i][j] = P[j][i] = (P[i][j] + P[j][i]) / 2;
+    for (let i = 0; i < 6; i++) {
+      if (!(P[i][i] > 0)) P[i][i] = 1e-9;
+      if (P[i][i] > MAX_VAR[i]) {
+        const k = Math.sqrt(MAX_VAR[i] / P[i][i]);
+        for (let j = 0; j < 6; j++) { P[i][j] *= k; P[j][i] *= k; }
+      }
+    }
   }
 
   /** Hold the state to what its class can physically do (see LIMITS). */
@@ -383,9 +404,11 @@ const SAME_SHARE = 0.6;     // overlapping this much of the narrower side's widt
 const SAME_DV = 3.0;        // ...and moving alike within this (m/s): one object seen twice
 
 /** Keep the solid road users apart, and off our car (ego: [cx, cy, w, l, psi] of our footprint, world). Each track
- *  is { f: PhysFilter, id }. Moves the less certain of each overlapping pair (all of it, against our car); returns
- *  the pairs that look like one object seen twice, [idA, idB], for the caller to merge. */
-export function separate(tracks, ego = null, iterations = 3) {
+ *  is { f: PhysFilter, id }. Two that overlap are one object seen twice (returned as [idA, idB] for the caller to
+ *  merge) when they overlap much and move alike, or when `distinct(idA, idB)` (given) says nothing tells them apart
+ *  (the radar often reports one car as two tracks); otherwise they're pushed apart, the less certain moving more
+ *  (all of it, against our car). */
+export function separate(tracks, ego = null, iterations = 3, distinct = null) {
   const solid = tracks.filter(t => SOLID.has(t.f.cls) || (t.f.cls === 'unknown' && t.f.dims));
   const same = [];
   const box = (f) => { const [w, l] = f.footprint; return [f.X[0], f.X[1], w, l, f.X[2]]; };
@@ -403,7 +426,8 @@ export function separate(tracks, ego = null, iterations = 3) {
         const o = overlap(box(A), box(B));
         if (!o) continue;
         const va = A.vel, vb = B.vel;
-        if (it === 0 && o.share >= SAME_SHARE && Math.hypot(va[0] - vb[0], va[1] - vb[1]) < SAME_DV) {
+        const alike = Math.hypot(va[0] - vb[0], va[1] - vb[1]) < SAME_DV;
+        if (it === 0 && ((o.share >= SAME_SHARE && alike) || (distinct && !distinct(solid[i].id, solid[j].id) && Math.hypot(va[0] - vb[0], va[1] - vb[1]) < 2 * SAME_DV))) {
           same.push([solid[i].id, solid[j].id]);
           continue;
         }
