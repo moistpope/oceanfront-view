@@ -5,7 +5,8 @@ import java.io.File
 
 /**
  * Pulse's CAN driver (an out-of-tree mcp251x) programs the two chips' hardware acceptance filters from
- * module parameters under /sys/module/mcp251x/parameters: per chip (0 = can1 = IBUS1, 1 = can2 = IBUS2)
+ * module parameters under /sys/module/mcp251x/parameters: per chip (0 = IBUS1, 1 = IBUS2; can1/can2, or
+ * can0/can1 on a Rock 5C)
  * `rxb_mask_<chip>` = "mask for buffer 0,mask for buffer 1", `rxb_filter_<chip>` = the six filters, and
  * `apply_filters` to program them. Its defaults pass only parts of the ID range and lose the steering
  * angle, yaw rate, seat and liftgate positions, battery current and charging times. This writes the plan
