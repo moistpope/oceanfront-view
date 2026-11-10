@@ -7,6 +7,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.BufferedWriter
 import java.io.OutputStreamWriter
 import java.util.concurrent.CopyOnWriteArraySet
@@ -14,8 +15,9 @@ import kotlin.concurrent.thread
 
 /**
  * The car's own CAN link. Pulse has two MCP251x CAN controllers wired to the car: can1 = IBUS1, can2 =
- * IBUS2. The gateway broadcasts the car's state there all the time, and mirrors the ADAS bus onto
- * IBUS2 for the head unit; this reads what the page decodes ([CanIds]) and forwards each frame to it.
+ * IBUS2 (can0 / can1 on the Rock 5C units, see [busMap]). The gateway broadcasts the car's state there
+ * all the time, and mirrors the ADAS bus onto IBUS2 for the head unit; this reads what the page decodes
+ * ([CanIds]) and forwards each frame to it.
  *
  * It can also send: the head unit's own control messages (windows, locks, climate, seats...), and only
  * those. The allowlist is enforced twice, here and in the helper that holds the sockets. Every frame
@@ -33,8 +35,14 @@ object CanBridge {
         fun onCanFrames(json: String)
     }
 
-    private val BUS = mapOf("can1" to "IBUS1", "can2" to "IBUS2")
-    private val IFACE = BUS.entries.associate { (k, v) -> v to k }
+    // interface -> bus. Pulse boards number their CAN interfaces differently: the original Orange Pi 5 Pro
+    // units have IBUS1 = can1, IBUS2 = can2; the European Radxa Rock 5C units IBUS1 = can0, IBUS2 = can1.
+    // Picked from what's present each time the helper starts ([busMap]).
+    @Volatile private var BUS: Map<String, String> = busMap(canPresent())
+    private val IFACE: Map<String, String> get() = BUS.entries.associate { (k, v) -> v to k }
+
+    // stat each name rather than listing /sys/class/net, which an app may not be allowed to read
+    private fun canPresent(): Set<String> = listOf("can0", "can1", "can2").filter { File("/sys/class/net/$it").exists() }.toSet()
 
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val latest = LinkedHashMap<String, JSONObject>()   // "bus/addr" -> last frame, for a new page
@@ -137,7 +145,8 @@ object CanBridge {
 
     /**
      * Runs the helper, and a new one whenever it ends. It ends on its own when its interfaces go away: Pulse's
-     * app reloads the CAN driver (rmmod, insmod), which makes new can1/can2 and puts the driver's own hardware
+     * app reloads the CAN driver (rmmod, insmod), which makes new interfaces (can1/can2, or can0/can1 on a
+     * Rock 5C) and puts the driver's own hardware
      * filters back, so they're opened again first, every time.
      */
     private fun run(bin: String, root: RootShell) {
@@ -149,9 +158,12 @@ object CanBridge {
             else Log.w(TAG, "CAN hardware filters left as they are ($why): some read-outs stay empty")
             val startedAt = System.currentTimeMillis()
             try {
-                Log.i(TAG, "CAN helper starting ($bin)")
-                val args = mutableListOf(bin, "can1=${CanIds.RX["IBUS1"]!!.hex()}", "can2=${CanIds.RX["IBUS2"]!!.hex()}")
-                for ((bus, ids) in CanIds.TX) args += "tx:${IFACE[bus]}=${ids.hex()}"
+                // which numbering this board uses, looked at again after each driver reload
+                BUS = busMap(canPresent())
+                val ifc = IFACE
+                Log.i(TAG, "CAN helper starting ($bin): IBUS1 = ${ifc["IBUS1"]}, IBUS2 = ${ifc["IBUS2"]}")
+                val args = mutableListOf(bin, "${ifc["IBUS1"]}=${CanIds.RX["IBUS1"]!!.hex()}", "${ifc["IBUS2"]}=${CanIds.RX["IBUS2"]!!.hex()}")
+                for ((bus, ids) in CanIds.TX) args += "tx:${ifc[bus]}=${ids.hex()}"
                 val p = ProcessBuilder(args).redirectErrorStream(false).start()
                 proc = p
                 stdin = BufferedWriter(OutputStreamWriter(p.outputStream))
@@ -240,3 +252,8 @@ object CanBridge {
     private const val FAST_FLUSH_MS = 16L
     private const val STEADY_MS = 30_000L   // a helper that ran this long was working
 }
+
+/** Which interface carries which bus, from the CAN interfaces present: can2 there = Orange Pi numbering, else can0/can1. */
+fun busMap(present: Set<String>): Map<String, String> =
+    if ("can2" in present || "can0" !in present) mapOf("can1" to "IBUS1", "can2" to "IBUS2")
+    else mapOf("can0" to "IBUS1", "can1" to "IBUS2")
