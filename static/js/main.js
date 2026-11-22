@@ -442,6 +442,7 @@ class App {
     if (!this.car.apa) this.scene.update(state, this.settings);
     this.updateRadarChip();
     if (this.ui.isOpen && this.ui.tab === 'display') { this.ui.showLaneConf(); this.ui.showPositionStatus(); }
+    if (this.ui.isOpen && this.ui.tab === 'driving') this.ui.showRouteTurn();
     this.autoView(state);
   }
 

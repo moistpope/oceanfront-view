@@ -33,6 +33,14 @@ export function maneuverOf(text) {
   return null;
 }
 
+// The next turn sunnypilot may take, from what the notification says (parseNav): a left or right turn, else none. Slight
+// bends, forks, ramps, roundabouts and U-turns aren't one: the driving model is asked only for real turns.
+export function routeTurnOf(parsed) {
+  const mv = parsed && parsed.maneuver, d = parsed && parsed.dist;
+  if (!mv || !d || !(mv.kind === 'turn' || mv.kind === 'sharp') || (mv.side !== 'left' && mv.side !== 'right')) return null;
+  return { direction: mv.side, distance: d.m, tolerance: d.half || 0 };
+}
+
 // A turn-by-turn notification as it came (title, text, subText, bigText, info): the next turn's distance
 // (as written, and m), what to do there, the street, and the trip line (time, distance, ETA).
 export function parseNav(raw) {
@@ -231,6 +239,21 @@ export class Infotainment {
     this.tf = { step: null, start: 0, p: null };   // p: a scratch Vector3, cloned from the camera's (keeps three.js out of this module, which the tests load)
   }
 
+  // The next turn, to the comma (webhud -> card): sunnypilot can take it when the car's own navigation has no route
+  // (sunnypilot/selfdrive/car/nav_route_turn.py), with the driver's blinker. Sent as the notification changes and once a
+  // second besides, with how long ago the nav app wrote the distance so the comma can carry it on with the car.
+  _sendRouteTurn() {
+    if (this.demo) return;
+    const n = this.nav, turn = n && routeTurnOf(n.parsed);
+    const age = n && n.raw.at ? Math.max(0, (Date.now() - n.raw.at) / 1000) : 0;
+    const msg = { type: 'routeTurn', direction: turn ? turn.direction : null, distance: turn ? turn.distance : 0,
+      tolerance: turn ? turn.tolerance : 0, age, step: n ? `${n.parsed.instruction}|${turn ? turn.direction : ''}` : '', app: n ? n.raw.pkg || '' : '' };
+    if (!turn && !this.sentTurn) return;   // nothing to say, and nothing said that needs taking back
+    this.sentTurn = !!turn;
+    this.routeTurnSent = turn ? { ...turn, at: Date.now() - age * 1000 } : null;
+    this.app.send?.(msg);
+  }
+
   setNav(raw) {
     this.nav = raw && (raw.title || raw.text) ? { raw, parsed: parseNav(raw) } : null;
     if (this.nav && !raw.icon && this.navIconKey === raw.iconKey) raw.icon = this.navIconData;
@@ -240,9 +263,10 @@ export class Infotainment {
     const nav = this.nav;
     if (nav && !nav.parsed.maneuver && raw.icon) {
       iconManeuverFromUrl(raw.icon, raw.iconKey || raw.icon).then((m) => {
-        if (m && this.nav === nav && !nav.parsed.maneuver) { nav.parsed = { ...nav.parsed, maneuver: m }; this._showNav(); }
+        if (m && this.nav === nav && !nav.parsed.maneuver) { nav.parsed = { ...nav.parsed, maneuver: m }; this._showNav(); this._sendRouteTurn(); }
       });
     }
+    this._sendRouteTurn();
   }
 
   _showNav() {
@@ -326,6 +350,8 @@ export class Infotainment {
     this._turnFloat();
     this._t = (this._t || 0) + dt;
     if (this._t > 0.25) { this._t = 0; this.tick(); }
+    this._rt = (this._rt || 0) + dt;
+    if (this._rt > 1) { this._rt = 0; this._sendRouteTurn(); }
   }
 }
 

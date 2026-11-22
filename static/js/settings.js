@@ -11,7 +11,6 @@ import { currentCountry } from './regional.js';
 // tab -> what it needs the comma for
 const OFFLINE_TABS = new Map([
   ['overrides', 'The CAN settings are kept on it and applied by it; they stay as they were.'],
-  ['driving', 'The driving settings are openpilot\'s, on the comma.'],
   ['playback', 'The recorded drives are on the comma.'],
 ]);
 
@@ -218,12 +217,19 @@ export class Settings {
 
   async renderDriving() {
     const body = this.body;
+    const nav = this.drivingNav();
+    body.append(nav);
+    if (!this.app.commaConnected) {
+      body.append(el('div.banner', 'The comma isn\'t connected (it\'s optional: the HUD runs from the car). The other driving settings are openpilot\'s, on the comma.'));
+      return;
+    }
     let p;
     try { p = await api('/api/params'); } catch (e) { body.append(el('div.banner.bad', e.message)); return; }
     if (this.tab !== 'driving') return;
     const put = async (obj) => {
       try { await api('/api/params', { method: 'PUT', body: obj }); this.app.toast('Saved'); this.renderDrivingSoon(); } catch (e) { this.app.toast(e.message); }
     };
+    this.drivingNavTurns(nav, p, put);
     body.append(el('div.section',
       el('h3', 'Following distance'),
       el('p.desc', 'openpilot driving personality (used with openpilot longitudinal control). The Fisker ADAS time gap is set with the steering wheel buttons.'),
@@ -298,6 +304,67 @@ export class Settings {
       el('div.row', el('div.lbl', el('b', 'Use metric units'), el('small', 'Device-wide setting; the HUD follows the cluster unit when available.')),
         this.app.switch(!!p.IsMetric, v => put({ IsMetric: v }))),
     )));
+  }
+
+  // Driving > Nav: the head unit's navigation on the HUD, and the route turns sunnypilot takes. The car's own navigation
+  // comes first; without it, Google Maps' next turn from the head unit is sent to the comma (infotainment.js), and
+  // sunnypilot takes a left or right turn on it once the driver signals it, below the lane turn speed.
+  drivingNav() {
+    const s = this.app.settings;
+    this.routeTurnNow = el('small');
+    const section = el('div.section', el('h3', 'Nav'),
+      el('div.rows',
+        el('div.row', el('div.lbl', el('b', 'Navigation on the HUD'), el('small', 'The next turn from the head unit\'s navigation, in a card at ' +
+          'the top and as an arrow on the road once it\'s near, and the route on the map in violet: bright as far as it can be told from ' +
+          'the next turn, fainter where it is only likely. Needs the HUD\'s Android app on the car\'s screen.')),
+          this.app.switch(s.showNav !== false, v => this.app.setSetting('showNav', v))),
+        el('div.row', el('div.lbl', el('b', 'Route turn'), this.routeTurnNow))));
+    this.showRouteTurn();
+    return section;
+  }
+
+  // the route turn sunnypilot is using now, and where it came from (carStateSP.routeTurn, card)
+  showRouteTurn() {
+    if (!this.routeTurnNow) return;
+    const op = (this.app.state && this.app.state.op) || {};
+    const rt = op.carStateSP && op.carStateSP.routeTurn;
+    let text;
+    if (rt) {
+      const side = rt.direction === 'turnLeft' ? 'Left' : 'Right';
+      text = `${side} turn in ${Math.max(0, Math.round(rt.distance))} m, from ${rt.fromNavApp ? 'Google Maps (OceanScape)' : 'the car\'s navigation'}`;
+    } else if (!this.app.commaConnected) {
+      text = 'The comma isn\'t connected.';
+    } else {
+      const sent = this.app.info && this.app.info.routeTurnSent;
+      text = sent ? `Sent the comma a ${sent.direction} turn from Google Maps, but it isn't using it: the comma may need updating.`
+        : 'No turn coming up on a route. The car\'s navigation comes first, else Google Maps on the head unit.';
+    }
+    if (this.routeTurnNow.textContent !== text) this.routeTurnNow.textContent = text;
+  }
+
+  // the route turn distances, kept on the comma (RouteTurn*Distance, sunnypilot route_turn.py): they apply to the car's
+  // own navigation too
+  drivingNavTurns(section, p, put) {
+    if (p.RouteTurnStartDistance == null) {
+      section.append(el('p.desc', 'The route turn distances need an updated comma.'));
+      return;
+    }
+    const slider = (key, title, desc, min, max, step, def) => {
+      const v0 = Math.min(max, Math.max(min, Number(p[key]) || def));
+      const value = el('b', `${v0} m`);
+      const fill = (v) => input.style.setProperty('--p', `${(v - min) / (max - min) * 100}%`);
+      const input = el('input', { type: 'range', min, max, step, value: v0,
+        oninput: (e) => { value.textContent = `${e.target.value} m`; fill(Number(e.target.value)); },
+        onchange: (e) => put({ [key]: Number(e.target.value) }) });
+      fill(v0);
+      return [el('div.rows', el('div.row', el('div.lbl', el('b', title), el('small', `${desc} Default ${def} m.`)), value)), input];
+    };
+    section.append(
+      el('p.desc', 'sunnypilot asks you to signal a turn on the route as it comes up, and takes it once you do, below the lane turn speed. ' +
+        'Kept on the comma, for the car\'s own navigation too.'),
+      ...slider('RouteTurnPromptDistance', 'Signal prompt', 'How far before the turn the "Turn Ahead" prompt to signal shows.', 50, 400, 10, 150),
+      ...slider('RouteTurnStartDistance', 'Start turning', 'How far before the turn point the driving model is asked to turn.', 10, 80, 5, 30),
+      ...slider('RouteTurnEndDistance', 'Keep turning', 'How far past the turn point the request lasts, to finish the corner.', 0, 40, 5, 15));
   }
 
   renderDrivingSoon() { setTimeout(() => { if (this.tab === 'driving') this.show('driving', true); }, 150); }
@@ -385,9 +452,6 @@ export class Settings {
       ['showTracks', 'Power trails', 'Glowing particle trails behind the rear tires, colored by how hard the motors pull (blue light, through the spectrum to red at full power); longer the faster you go.'],
       ['autoView', 'Auto view', 'Switch to the top view while parking and back when driving.'],
       ['showMusic', 'Music', 'What the head unit is playing, in a card at the bottom with its controls. Needs the HUD\'s Android app on the car\'s screen.'],
-      ['showNav', 'Navigation', 'The next turn from the head unit\'s navigation, in a card at the top and as an arrow on the road once it\'s near, ' +
-        'and the route on the map in violet: bright as far as it can be told from the next turn, fainter where it is only likely. ' +
-        'Needs the HUD\'s Android app on the car\'s screen.'],
     ]));
   }
 
