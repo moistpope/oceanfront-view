@@ -44,6 +44,7 @@ class HudListener : NotificationListenerService() {
     private var showing: MediaController? = null
     /** The navigation notifications up now, by key, the most recently posted last: what each sent, and its picture. */
     private val navs = LinkedHashMap<String, Pair<JSONObject, String?>>()
+    private val turns = HashMap<String, NavTurn.Turn?>()   // each navigation notification's turn, for sunnypilot (NavTurn)
 
     private val manager get() = getSystemService(MediaSessionManager::class.java)
     private val me get() = ComponentName(this, HudListener::class.java)
@@ -66,19 +67,26 @@ class HudListener : NotificationListenerService() {
         manager.removeOnActiveSessionsChangedListener(sessionsChanged)
         follow(emptyList())
         navs.clear()
+        turns.clear()
         Infotainment.setNav(null, null)
+        NavTurn.update(Link.get(this), null, "", 0L)
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) = posted(sbn)
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        turns.remove(sbn.key)
         if (navs.remove(sbn.key) != null) publishNav()
     }
 
     /** The most recent navigation notification, else none. */
     private fun publishNav() {
-        val (j, icon) = navs.values.lastOrNull() ?: (null to null)
+        val (key, entry) = navs.entries.lastOrNull()?.let { it.key to it.value } ?: (null to null)
+        val (j, icon) = entry ?: (null to null)
         Infotainment.setNav(j, icon)
+        // the next turn to the comma, whether the HUD is on screen or not
+        val turn = key?.let { turns[it] }
+        NavTurn.update(Link.get(this), turn, j?.optString("pkg").orEmpty(), j?.optLong("at") ?: 0L)
     }
 
     // ---- media ------------------------------------------------------------------------------------
@@ -187,15 +195,29 @@ class HudListener : NotificationListenerService() {
             .put("at", sbn.postTime)
         Log.d(TAG, "navigation: ${j.optString("title")} | ${j.optString("text")} | ${j.optString("subText")}")
         // the turn's picture (Google Maps draws the maneuver as the large icon)
-        val icon = try {
-            n.getLargeIcon()?.loadDrawable(this)?.let { Infotainment.dataUrl(toBitmap(it), ICON_PX, png = true) }
+        val bitmap = try {
+            n.getLargeIcon()?.loadDrawable(this)?.let { toBitmap(it) }
         } catch (e: Exception) {
             null
         }
+        val icon = bitmap?.let { Infotainment.dataUrl(it, ICON_PX, png = true) }
         j.put("iconKey", icon?.hashCode()?.toString() ?: "")
+        turns[sbn.key] = turnOf(j, bitmap)
         navs.remove(sbn.key)
         navs[sbn.key] = j to icon
         publishNav()
+    }
+
+    /** The notification's next turn for sunnypilot, its picture read at the page's 64 px (navicon.js). */
+    private fun turnOf(j: JSONObject, bitmap: Bitmap?): NavTurn.Turn? = try {
+        val px = bitmap?.let {
+            val s = Bitmap.createScaledBitmap(it, TURN_PX, TURN_PX, true)
+            IntArray(TURN_PX * TURN_PX).also { a -> s.getPixels(a, 0, TURN_PX, 0, 0, TURN_PX, TURN_PX); if (s !== it) s.recycle() }
+        }
+        NavTurn.of(j.optString("title"), j.optString("text"), j.optString("bigText"), j.optString("lines"), j.optString("app"), px, TURN_PX, TURN_PX)
+    } catch (e: Exception) {
+        Log.w(TAG, "navigation: can't read the turn: ${e.message}")
+        null
     }
 
     // ---- helpers ----------------------------------------------------------------------------------
@@ -223,6 +245,7 @@ class HudListener : NotificationListenerService() {
         private const val TAG = "WebHud"
         private const val ART_PX = 256
         private const val ICON_PX = 96
+        private const val TURN_PX = 64
 
         /** Navigation apps whose ongoing notification is the route, should they not mark it navigation. */
         val NAV_APPS = setOf(

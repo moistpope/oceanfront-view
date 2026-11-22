@@ -307,7 +307,7 @@ export class Settings {
   }
 
   // Driving > Nav: the head unit's navigation on the HUD, and the route turns sunnypilot takes. The car's own navigation
-  // comes first; without it, Google Maps' next turn from the head unit is sent to the comma (infotainment.js), and
+  // comes first; without it, Google Maps' next turn from the head unit is sent to the comma (NavTurn.kt), and
   // sunnypilot takes a left or right turn on it once the driver signals it, below the lane turn speed.
   drivingNav() {
     const s = this.app.settings;
@@ -335,9 +335,8 @@ export class Settings {
     } else if (!this.app.commaConnected) {
       text = 'The comma isn\'t connected.';
     } else {
-      const sent = this.app.info && this.app.info.routeTurnSent;
-      text = sent ? `Sent the comma a ${sent.direction} turn from Google Maps, but it isn't using it: the comma may need updating.`
-        : 'No turn coming up on a route. The car\'s navigation comes first, else Google Maps on the head unit.';
+      text = 'No turn coming up on a route. The car\'s navigation comes first, else Google Maps on the head unit (sent to the comma ' +
+        'by the Android app, on screen or not).';
     }
     if (this.routeTurnNow.textContent !== text) this.routeTurnNow.textContent = text;
   }
